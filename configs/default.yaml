@@ -1,0 +1,57 @@
+TRAINER:
+  renderer: diff_gaussian_rasterization_ch3
+  forward_renderer: forward_lite
+  model: stg_lite
+  model_path: /data/yzx/output/STG-Lite/default
+  load_iteration: null
+  iterations: 30000
+  saving_iterations: [1700, 7000, 10000, 12000, 15000, 20000, 25000, 30000]
+  trainer_seed: 0
+  lambda_dssim: 0.2
+  model_params:
+    device: cuda
+    t_scale_init: null
+    split_num: 2
+    split_ratio: 0.8
+    percent_grad_xyz: 0.005
+    percent_dense_xyz: 0.01
+    densification_start: 500
+    densification_step: 100
+    densification_end: 12000
+    reset_opacity_start: 3000
+    reset_opacity_step: 3000
+    reset_opacity_end: 12000
+    prune_points_start: 0
+    prune_points_step: 1
+    prune_points_end: 7000
+    prune_threshold: 0.005
+    remove_outlier_iterations: []
+    learning_rate:
+      xyz_init: 0.00016
+      xyz_final: 0.0000016
+      xyz_delay_mult: 0.01
+      xyz_max_steps: 30000
+      t: 0.0001
+      xyz_scales: 0.005
+      t_scale: 0.03
+      rotation: 0.001
+      motion: 3.5
+      omega: 0.0001
+      opacity: 0.05
+      features_dc: 0.0025
+    white_background: false
+  dataset_type: technicolor
+  dataset_params:
+    source_path: /data/yzx/ours/scene1_opera_girl/
+    resolution_scale: 2.0
+    frame_rate: 60
+    start_frame: 0
+    duration: 60
+    is_eval: false
+    train_test_split_seed: 0
+    near: 0.01
+    far: 100.0
+    lazy_load: true
+    ply_path: null
+    data_device: cpu
+    int8_mode: true
