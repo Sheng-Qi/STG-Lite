@@ -182,6 +182,7 @@ class TechnicolorDataset(AbstractDataset):
                     trans=np.array([0, 0, 0]),
                     scale=1.0,
                     timestamp=time,
+                    timestamp_ratio=(time - self._start_frame) / self._duration,
                 )
                 cameras.append(
                     Camera(

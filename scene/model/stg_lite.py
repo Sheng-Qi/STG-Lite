@@ -316,7 +316,7 @@ class GaussianModel(AbstractModel):
         delta_t = (
             torch.full(
                 (self._xyz.shape[0], 1),
-                camera.camera_info.timestamp,
+                camera.camera_info.timestamp_ratio,
                 dtype=self._xyz.dtype,
                 requires_grad=False,
                 device=self._device,
@@ -366,7 +366,7 @@ class GaussianModel(AbstractModel):
         delta_t = (
             torch.full(
                 (self._xyz.shape[0], 1),
-                camera.camera_info.timestamp,
+                camera.camera_info.timestamp_ratio,
                 dtype=self._xyz.dtype,
                 requires_grad=False,
                 device=self._device,
@@ -374,7 +374,7 @@ class GaussianModel(AbstractModel):
             - self._t
         )
         rendered_image, radii = rasterizer(
-            timestamp=camera.camera_info.timestamp,
+            timestamp=camera.camera_info.timestamp_ratio,
             trbfcenter=self._t,
             trbfscale=torch.exp(self._t_scale),
             motion=self._motion,
@@ -512,7 +512,7 @@ class GaussianModel(AbstractModel):
 
                 space_split_mask = torch.logical_and(
                     space_mask,
-                    torch.max(self._xyz_scales, dim=1).values
+                    torch.max(torch.exp(self._xyz_scales), dim=1).values
                     > self._percent_dense_xyz * self._cameras_extent,
                 )
                 space_split_mask_under_selection = torch.logical_and(
@@ -711,4 +711,4 @@ class GaussianModel(AbstractModel):
         return torch.nn.functional.normalize(self._rotation + delta_t * self._omega)
 
     def _get_opacity_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
-        return torch.sigmoid(self._opacity) * trbfunction(delta_t / self._t_scale)
+        return torch.sigmoid(self._opacity) * trbfunction(delta_t / torch.exp(self._t_scale))

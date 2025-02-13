@@ -28,7 +28,8 @@ class CameraInfo:
     far: float
     trans: np.ndarray
     scale: float
-    timestamp: float
+    timestamp: int
+    timestamp_ratio: float
 
 
 class Camera:

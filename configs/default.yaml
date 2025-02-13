@@ -10,7 +10,7 @@ TRAINER:
   lambda_dssim: 0.2
   model_params:
     device: cuda
-    t_scale_init: null
+    t_scale_init: -2.0
     split_num: 2
     split_ratio: 0.8
     percent_grad_xyz: 0.005
@@ -47,7 +47,7 @@ TRAINER:
     frame_rate: 60
     start_frame: 0
     duration: 60
-    is_eval: false
+    is_eval: true
     train_test_split_seed: 0
     near: 0.01
     far: 100.0

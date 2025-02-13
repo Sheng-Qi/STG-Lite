@@ -5,9 +5,9 @@ import torchvision
 import json
 import argparse
 import yaml
+import shutil
 from tqdm import tqdm
 import logging
-from math import log
 from scene.cameras import Camera
 from scene.dataset import parse_dataset
 from scene.model import parse_model
@@ -17,7 +17,7 @@ from utils.loss_utils import get_loss, ssim
 
 
 class Trainer:
-    def __init__(self, trainer_options: dict):
+    def __init__(self, trainer_options: dict, debug: bool = False):
         self._renderer: str = trainer_options["renderer"]
         self._forward_renderer: str = trainer_options["forward_renderer"]
         self._model: str = trainer_options["model"]
@@ -30,6 +30,7 @@ class Trainer:
         self._model_params: dict = trainer_options["model_params"]
         self._dataset_type: str = trainer_options["dataset_type"]
         self._dataset_params: dict = trainer_options["dataset_params"]
+        self._debug = debug
 
         self._preprocess_config()
 
@@ -89,7 +90,9 @@ class Trainer:
         np.random.seed(self._trainer_seed)
         self._progress_bar = tqdm(range(self._iterations), desc="Training progress")
         for iteration in range(self._iterations):
-            selected_train_camera = np.random.choice(self._dataset.train_cameras)
+            selected_train_camera: Camera = np.random.choice(
+                self._dataset.train_cameras
+            )
             with torch.no_grad():
                 self._gaussians.iteration_start(iteration, selected_train_camera)
             self._gaussians.optimizer.zero_grad(set_to_none=True)
@@ -104,6 +107,19 @@ class Trainer:
                 self._lambda_dssim,
             )
             loss.backward()
+
+            if self._debug:
+                with torch.no_grad():
+                    save_path = os.path.join(
+                        self._model_path,
+                        "debug",
+                        f"{selected_train_camera.camera_info.image_name.split('.')[0]}_{iteration}_{selected_train_camera.camera_info.timestamp}.png",
+                    )
+                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                    torchvision.utils.save_image(
+                        render_pkgs["rendered_image"], save_path
+                    )
+
             if iteration < self._iterations - 1:
                 self._gaussians.optimizer.step()
             with torch.no_grad():
@@ -150,7 +166,9 @@ class Trainer:
                 ssim_sum += ssim(render_pkgs["rendered_image"], test_camera.image)
                 time_sum += time
                 save_path = os.path.join(
-                    self._model_path, "rendered", test_camera.camera_info.image_name
+                    self._model_path,
+                    "rendered",
+                    f"{test_camera.camera_info.image_name.split('.')[0]}_{test_camera.camera_info.timestamp:05d}.png",
                 )
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 torchvision.utils.save_image(render_pkgs["rendered_image"], save_path)
@@ -158,28 +176,25 @@ class Trainer:
         logging.info(f"Time: {time_sum / len(self._dataset.test_cameras)}")
 
     def _preprocess_config(self):
-        if self._model_params["t_scale_init"] is None:
-            self._model_params["t_scale_init"] = log(
-                1 / self._dataset_params["frame_rate"]
-            )
-            logging.info(f"t_scale_init: {self._model_params['t_scale_init']}")
         self._dataset_params["device"] = self._model_params["device"]
 
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--config", type=str, default="configs/default.yaml")
-    arg_parser.add_argument("--log", type=str, default="INFO")
     arg_parser.add_argument("--skip_train", action="store_false", dest="train")
     arg_parser.add_argument("--skip_eval", action="store_false", dest="eval")
+    arg_parser.add_argument("--debug", action="store_true")
     args = arg_parser.parse_args()
 
-    logging.basicConfig(level=args.log)
-    print(args.eval)
+    logging.basicConfig(level=logging.INFO if not args.debug else logging.DEBUG)
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
-    trainer = Trainer(config["TRAINER"])
+        model_path = config["TRAINER"]["model_path"]
+        os.makedirs(model_path, exist_ok=True)
+        shutil.copy(args.config, os.path.join(model_path, "config.yaml"))
+    trainer = Trainer(config["TRAINER"], debug=args.debug)
     trainer.load_model()
     if args.train:
         trainer.train_model()
