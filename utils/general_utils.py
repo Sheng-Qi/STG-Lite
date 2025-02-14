@@ -146,6 +146,7 @@ def build_rotation(r):
     R[:, 2, 2] = 1 - 2 * (x * x + y * y)
     return R
 
+
 def update_quaternion(q, omega, delta_t):
     magnitude_omega = torch.norm(omega, dim=1, keepdim=True)
     half_angle = magnitude_omega * delta_t / 2.0

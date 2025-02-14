@@ -113,6 +113,7 @@ class TechnicolorDataset(AbstractDataset):
         if self._ply_path is None:
             self._ply_path = os.path.join(
                 self._source_path,
+                "input_ply",
                 f"points3D_{self._start_frame}_{self._start_frame + self._duration}.ply",
             )
             logging.info("PLY path not provided. Setting to " + self._ply_path)
@@ -177,6 +178,7 @@ class TechnicolorDataset(AbstractDataset):
                     T=T,
                     image_folder=image_folder,
                     image_name=image_name,
+                    camera_id=self._get_camera_index(image_name),
                     near=self._near,
                     far=self._far,
                     trans=np.array([0, 0, 0]),

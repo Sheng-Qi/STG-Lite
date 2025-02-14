@@ -1,4 +1,5 @@
 import numpy as np
+import os
 from plyfile import PlyData, PlyElement
 from utils.graphics_utils import BasicPointCloud
 
@@ -27,4 +28,5 @@ def storePly(path, xyzt, rgb):
 
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     ply_data.write(path)

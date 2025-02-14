@@ -2,20 +2,23 @@ TRAINER:
   renderer: diff_gaussian_rasterization_ch3
   forward_renderer: forward_lite
   model: stg_lite
-  model_path: /data/yzx/output/STG-Lite/default
+  model_path: output/default
   load_iteration: null
   iterations: 30000
-  saving_iterations: [1700, 7000, 10000, 12000, 15000, 20000, 25000, 30000]
+  saving_iterations: [1700, 7000, 10000, 12000, 15000, 20000, 25000, 29999]
   trainer_seed: 0
   lambda_dssim: 0.2
   model_params:
     device: cuda
+    enable_color_transform: true
+    lambda_color_transform: 0.01
+    color_transform_matrix_model_path_prior: null
     t_scale_init: -2.0
     split_num: 2
     split_ratio: 0.8
-    percent_grad_xyz: 0.005
+    grad_threshold_xyz: 0.0001
     percent_dense_xyz: 0.01
-    densification_start: 500
+    densification_start: 1700
     densification_step: 100
     densification_end: 12000
     reset_opacity_start: 3000
@@ -30,6 +33,7 @@ TRAINER:
       xyz_init: 0.00016
       xyz_final: 0.0000016
       xyz_delay_mult: 0.01
+      xyz_delay_steps: 100
       xyz_max_steps: 30000
       t: 0.0001
       xyz_scales: 0.005
@@ -39,10 +43,15 @@ TRAINER:
       omega: 0.0001
       opacity: 0.05
       features_dc: 0.0025
+      color_transformation_init: 0.05
+      color_transformation_final: 0.0005
+      color_transformation_delay_mult: 0.01
+      color_transformation_delay_steps: 1000
+      color_transformation_max_steps: 30000
     white_background: false
   dataset_type: technicolor
   dataset_params:
-    source_path: /data/yzx/ours/scene1_opera_girl/
+    source_path: /home/wsq/Data/SSD/ours/scene1_opera_girl/
     resolution_scale: 2.0
     frame_rate: 60
     start_frame: 0

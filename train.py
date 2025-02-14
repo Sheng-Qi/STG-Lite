@@ -32,8 +32,6 @@ class Trainer:
         self._dataset_params: dict = trainer_options["dataset_params"]
         self._debug = debug
 
-        self._preprocess_config()
-
         self._GaussianRasterizer, self._GaussianRasterizationSettings = parse_renderer(
             self._renderer
         )
@@ -42,12 +40,13 @@ class Trainer:
         )
         self._GaussianModel = parse_model(self._model)
         self._progress_bar = None
-        self._ema_loss_for_log = 0.0
+        self._ema_loss_for_log = None
 
+        self._preprocess_dataset_config()
         self._dataset = parse_dataset(self._dataset_type)(self._dataset_params)
-        self._gaussians = self._GaussianModel(
-            self._model_params, self._dataset.nerf_norm["radius"]
-        )
+
+        self._preprocess_model_config()
+        self._gaussians = self._GaussianModel(self._model_params)
 
     def load_model(self):
         if self._load_iteration is None:
@@ -60,21 +59,27 @@ class Trainer:
             cameras = list[Camera]()
             cameras.extend(self._dataset.train_cameras)
             cameras.extend(self._dataset.test_cameras)
-            for id, cam in enumerate(cameras):
+            sorted_cameras = sorted(
+                cameras,
+                key=lambda x: os.path.join(
+                    x.camera_info.image_folder, x.camera_info.image_name
+                ),
+            )
+            for id, cam in enumerate(sorted_cameras):
                 json_cams.append(camera_to_JSON(id, cam._camera_info))
             with open(os.path.join(self._model_path, "cameras.json"), "w") as file:
                 json.dump(json_cams, file, indent=2)
             with open(os.path.join(self._model_path, "cfg_args"), "w") as file:
                 txt_content = "Namespace(sh_degree=3)"
                 file.write(txt_content)
-            self._gaussians.init_from_pcd(self._dataset.ply_data)
+            self._gaussians.init(self._dataset.ply_data)
         else:
             active_iteration = (
                 searchForMaxIteration(os.path.join(self._model_path, "point_cloud"))
                 if self._load_iteration == -1
                 else self._load_iteration
             )
-            self._gaussians.load_from_pcd(
+            self._gaussians.load(
                 os.path.join(
                     self._model_path,
                     "point_cloud",
@@ -105,7 +110,7 @@ class Trainer:
                 render_pkgs["rendered_image"],
                 selected_train_camera.image,
                 self._lambda_dssim,
-            )
+            ) + self._gaussians.get_regularization_loss(camera=selected_train_camera)
             loss.backward()
 
             if self._debug:
@@ -126,7 +131,9 @@ class Trainer:
                 self._gaussians.iteration_end(iteration, selected_train_camera)
             with torch.no_grad():
                 self._ema_loss_for_log = (
-                    0.4 * loss.item() + 0.6 * self._ema_loss_for_log
+                    (0.4 * loss.item() + 0.6 * self._ema_loss_for_log)
+                    if self._ema_loss_for_log is not None
+                    else loss.item()
                 )
                 if iteration % 10 == 0:
                     self._progress_bar.set_postfix(
@@ -138,7 +145,7 @@ class Trainer:
                     )
                     self._progress_bar.update(10)
                 if iteration in self._saving_iterations:
-                    self._gaussians.save_pcd(
+                    self._gaussians.save(
                         os.path.join(
                             self._model_path,
                             "point_cloud",
@@ -175,8 +182,11 @@ class Trainer:
         logging.info(f"SSIM: {ssim_sum / len(self._dataset.test_cameras)}")
         logging.info(f"Time: {time_sum / len(self._dataset.test_cameras)}")
 
-    def _preprocess_config(self):
+    def _preprocess_dataset_config(self):
         self._dataset_params["device"] = self._model_params["device"]
+
+    def _preprocess_model_config(self):
+        self._model_params["cameras_extent"] = self._dataset.nerf_norm["radius"]
 
 
 if __name__ == "__main__":

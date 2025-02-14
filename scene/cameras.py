@@ -24,6 +24,7 @@ class CameraInfo:
     T: np.ndarray
     image_folder: str
     image_name: str
+    camera_id: int
     near: float
     far: float
     trans: np.ndarray

@@ -13,21 +13,24 @@ from scene.cameras import Camera
 from utils.math_utils import trbfunction
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from utils.graphics_utils import BasicPointCloud
+from utils.loss_utils import color_transform_regularization_loss
 
 
 class GaussianModel(AbstractModel):
 
-    def __init__(self, model_params: dict, cameras_extent: float):
+    def __init__(self, model_params: dict):
         # Model parameters
-        try:
-            self._device = torch.device(model_params["device"])
-        except Exception as e:
-            logging.error(f"Error while setting device: {e}\nUsing cuda by default")
-            self._device = torch.device("cuda")
+        super().__init__(model_params)
+        self._cameras_extent = model_params["cameras_extent"]
+        self._enable_color_transform: bool = model_params["enable_color_transform"]
+        self._lambda_color_transform: float = model_params["lambda_color_transform"]
+        self._color_transform_matrix_model_path_prior: str = model_params[
+            "color_transform_matrix_model_path_prior"
+        ]
         self._t_scale_init: float = model_params["t_scale_init"]
         self._split_num: int = model_params["split_num"]
         self._split_ratio: float = model_params["split_ratio"]
-        self._percent_grad_xyz: float = model_params["percent_grad_xyz"]
+        self._grad_threshold_xyz: float = model_params["grad_threshold_xyz"]
         self._percent_dense_xyz: float = model_params["percent_dense_xyz"]
         self._densification_start: int = model_params["densification_start"]
         self._densification_step: int = model_params["densification_step"]
@@ -46,7 +49,6 @@ class GaussianModel(AbstractModel):
         self._white_background: bool = model_params["white_background"]
 
         # Other parameters
-        self._cameras_extent = cameras_extent
         self._background_color = torch.tensor(
             [1, 1, 1] if self._white_background else [0 for i in range(9)],
             dtype=torch.float32,
@@ -55,9 +57,13 @@ class GaussianModel(AbstractModel):
         self._max_bounds_init = None
         self._min_bounds_init = None
         self._xyz_scheduler_args = None
+        self._color_transformation_scheduler_args = None
         self._optimizer = None
 
-        # cached renderings
+        # Color transform parameters
+        self._color_transformation_matrix_dict = {}
+
+        # Cached renderings
         self._rendered_image = None
         self._radii = None
         self._rendered_depth = None
@@ -83,7 +89,7 @@ class GaussianModel(AbstractModel):
     def optimizer(self) -> torch.optim.Optimizer:
         return self._optimizer
 
-    def init_from_pcd(self, pcd_data: BasicPointCloud):
+    def init(self, pcd_data: BasicPointCloud):
         point_cloud = torch.tensor(np.asarray(pcd_data.points)).float().to(self._device)
         color = torch.tensor(np.asarray(pcd_data.colors)).float().to(self._device)
         times = torch.tensor(np.asarray(pcd_data.times)).float().to(self._device)
@@ -135,9 +141,24 @@ class GaussianModel(AbstractModel):
 
         self._max_bounds_init = [torch.amax(point_cloud[:, i]) for i in range(3)]
         self._min_bounds_init = [torch.amin(point_cloud[:, i]) for i in range(3)]
+
+        if self._enable_color_transform and self._color_transform_matrix_model_path_prior is not None:
+            if os.path.exists(self._color_transform_matrix_model_path_prior):
+                self._color_transformation_matrix_dict = torch.load(
+                    self._color_transform_matrix_model_path_prior, device=self._device
+                )
+            else:
+                logging.warning(
+                    f"Color transformation matrix model not found at {self._color_transform_matrix_model_path_prior}"
+                )
+
         self._setup()
 
-    def load_from_pcd(self, pcd_path: str, init_pcd_data: BasicPointCloud):
+    def load(
+        self,
+        pcd_path: str,
+        init_pcd_data: BasicPointCloud
+    ):
         plydata = PlyData.read(pcd_path)
 
         xyz_names = ["x", "y", "z"]
@@ -228,9 +249,24 @@ class GaussianModel(AbstractModel):
         )
         self._max_bounds_init = [torch.amax(point_cloud[:, i]) for i in range(3)]
         self._min_bounds_init = [torch.amin(point_cloud[:, i]) for i in range(3)]
+
+        if self._enable_color_transform:
+            if self._color_transform_matrix_model_path_prior is None:
+                self._color_transform_matrix_model_path_prior = pcd_path.replace(
+                    ".ply", "_color_transform_matrix.pth"
+                )
+            if os.path.exists(self._color_transform_matrix_model_path_prior):
+                self._color_transformation_matrix_dict = torch.load(
+                    self._color_transform_matrix_model_path_prior, device=self._device
+                )
+            else:
+                logging.warning(
+                    f"Color transformation matrix model not found at {self._color_transform_matrix_model_path_prior}"
+                )
+
         self._setup()
 
-    def save_pcd(self, pcd_path: str):
+    def save(self, pcd_path: str):
         os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -278,20 +314,14 @@ class GaussianModel(AbstractModel):
         pcd_vertex_element = PlyElement.describe(elements, "vertex")
         PlyData([pcd_vertex_element]).write(pcd_path)
 
-    def iteration_start(self, iteration: int, camera: Camera):
-        self._density_control(iteration)
-        if iteration in range(
-            self._reset_opacity_start, self._reset_opacity_end, self._reset_opacity_step
-        ):
-            self._reset_opacity()
-        if iteration in self._remove_outlier_iterations:
-            self._remove_outlier()
-        if iteration in range(
-            self._prune_points_start, self._prune_points_end, self._prune_points_step
-        ):
-            self._prune_points(torch.sigmoid(self._opacity) < self._prune_threshold)
-
-        self._update_learning_rate(iteration)
+        if self._enable_color_transform:
+            self._color_transform_matrix_model_path_prior = pcd_path.replace(
+                ".ply", "_color_transform_matrix.pth"
+            )
+            torch.save(
+                self._color_transformation_matrix_dict,
+                self._color_transform_matrix_model_path_prior,
+            )
 
     def render(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
         self._screenspace_points = torch.zeros_like(
@@ -334,6 +364,34 @@ class GaussianModel(AbstractModel):
             rotations=self._get_rotation_projected(delta_t),
             cov3D_precomp=None,
         )
+
+        if self._enable_color_transform:
+            camera_key = f"color_transformation_matrix_{camera.camera_info.camera_id}"
+            if camera_key not in self._color_transformation_matrix_dict:
+                matrix_param = nn.Parameter(
+                    torch.tensor(
+                        [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]],
+                        dtype=torch.float32,
+                        device=self._device,
+                    ),
+                    requires_grad=True,
+                )
+                new_param_group = {
+                    "params": [matrix_param],
+                    "lr": self._learning_rate["color_transformation_init"],
+                    "name": camera_key,
+                }
+                self._optimizer.add_param_group(new_param_group)
+                self._color_transformation_matrix_dict[camera_key] = matrix_param
+            else:
+                matrix_param = self._color_transformation_matrix_dict[camera_key]
+
+            image_stack_with_alpha = torch.cat(
+                [self._rendered_image, torch.ones_like(self._rendered_image[:1])], dim=0
+            )
+            self._rendered_image = torch.einsum(
+                "ij, jwh -> iwh", matrix_param, image_stack_with_alpha
+            )
 
         return {
             "rendered_image": self._rendered_image,
@@ -387,6 +445,22 @@ class GaussianModel(AbstractModel):
             rotations=self._get_rotation_projected(delta_t),
             cov3D_precomp=None,
         )
+
+        if self._enable_color_transform:
+            camera_key = f"color_transformation_matrix_{camera.camera_info.camera_id}"
+            if camera_key not in self._color_transformation_matrix_dict:
+                logging.info(
+                    f"Color transformation matrix not found for test camera {camera_key}"
+                )
+            else:
+                matrix_param = self._color_transformation_matrix_dict[camera_key]
+                image_stack_with_alpha = torch.cat(
+                    [rendered_image, torch.ones_like(rendered_image[:1])], dim=0
+                )
+                rendered_image = torch.einsum(
+                    "ij, jwh -> iwh", matrix_param, image_stack_with_alpha
+                )
+
         end_time.record()
         torch.cuda.synchronize()
         duration = start_time.elapsed_time(end_time)
@@ -396,12 +470,39 @@ class GaussianModel(AbstractModel):
             "duration": duration,
         }
 
+    def iteration_start(self, iteration: int, camera: Camera):
+        self._density_control(iteration)
+        if iteration in range(
+            self._reset_opacity_start, self._reset_opacity_end, self._reset_opacity_step
+        ):
+            self._reset_opacity()
+        if iteration in self._remove_outlier_iterations:
+            self._remove_outlier()
+        if iteration in range(
+            self._prune_points_start, self._prune_points_end, self._prune_points_step
+        ):
+            self._prune_points(torch.sigmoid(self._opacity) < self._prune_threshold)
+
+        self._update_learning_rate(iteration)
+
+    def get_regularization_loss(self, camera: Camera) -> torch.Tensor:
+        loss = super().get_regularization_loss(camera)
+        if self._enable_color_transform:
+            matrix_param = self._color_transformation_matrix_dict[
+                f"color_transformation_matrix_{camera.camera_info.camera_id}"
+            ]
+            default_matrix = torch.tensor(
+                [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]],
+                dtype=torch.float32,
+                device=self._device,
+            )
+            loss += color_transform_regularization_loss(
+                matrix_param, default_matrix, torch.tensor(self._lambda_color_transform, device=self._device)
+            )
+        return loss
+
     def __len__(self) -> int:
         return self._xyz.shape[0] if self._xyz is not None else 0
-
-    def iteration_end(self, iteration: int, camera: Camera):
-        # This function currently does nothing, but it might be used in the future
-        pass
 
     def _setup(self):
         self._xyz_gradient_accum = torch.zeros(
@@ -468,14 +569,24 @@ class GaussianModel(AbstractModel):
         self._xyz_scheduler_args = get_expon_lr_func(
             lr_init=self._learning_rate["xyz_init"] * self._cameras_extent,
             lr_final=self._learning_rate["xyz_final"] * self._cameras_extent,
+            lr_delay_steps=self._learning_rate["xyz_delay_steps"],
             lr_delay_mult=self._learning_rate["xyz_delay_mult"],
             max_steps=self._learning_rate["xyz_max_steps"],
+        )
+        self._color_transformation_scheduler_args = get_expon_lr_func(
+            lr_init=self._learning_rate["color_transformation_init"],
+            lr_final=self._learning_rate["color_transformation_final"],
+            lr_delay_steps=self._learning_rate["color_transformation_delay_steps"],
+            lr_delay_mult=self._learning_rate["color_transformation_delay_mult"],
+            max_steps=self._learning_rate["color_transformation_max_steps"],
         )
 
     def _update_learning_rate(self, iteration: int):
         for param_group in self._optimizer.param_groups:
             if param_group["name"] == "xyz":
                 param_group["lr"] = self._xyz_scheduler_args(iteration)
+            elif param_group["name"].startswith("color_transformation_matrix"):
+                param_group["lr"] = self._color_transformation_scheduler_args(iteration)
 
     def _density_control(self, iteration: int):
         if iteration in range(self._densification_start, self._densification_end):
@@ -498,17 +609,7 @@ class GaussianModel(AbstractModel):
 
                 xyz_gradient_avg = self._xyz_gradient_accum / self._xyz_gradient_denom
                 xyz_gradient_avg[xyz_gradient_avg.isnan()] = 0
-                sorted_grads, indices = torch.sort(
-                    torch.norm(xyz_gradient_avg, dim=-1), descending=True
-                )
-                space_mask = torch.zeros_like(
-                    torch.norm(xyz_gradient_avg, dim=-1),
-                    dtype=bool,
-                    device=self._device,
-                )
-                space_mask[
-                    indices[: int(len(sorted_grads) * self._percent_grad_xyz)]
-                ] = True
+                space_mask = xyz_gradient_avg.squeeze() > self._grad_threshold_xyz
 
                 space_split_mask = torch.logical_and(
                     space_mask,
@@ -561,44 +662,7 @@ class GaussianModel(AbstractModel):
                     "features_dc": new_features_dc,
                 }
 
-                optimizable_tensors = {}
-                for group in self._optimizer.param_groups:
-                    if len(group["params"]) == 1 and group["name"] in param_dict:
-                        extension_tensor = param_dict[group["name"]]
-                        stored_state = self._optimizer.state.get(
-                            group["params"][0], None
-                        )
-                        if stored_state is not None:
-                            stored_state["exp_avg"] = torch.cat(
-                                (
-                                    stored_state["exp_avg"],
-                                    torch.zeros_like(extension_tensor),
-                                ),
-                                dim=0,
-                            )
-                            stored_state["exp_avg_sq"] = torch.cat(
-                                (
-                                    stored_state["exp_avg_sq"],
-                                    torch.zeros_like(extension_tensor),
-                                ),
-                                dim=0,
-                            )
-
-                            del self._optimizer.state[group["params"][0]]
-                            group["params"][0] = nn.Parameter(
-                                torch.cat(
-                                    (group["params"][0], extension_tensor), dim=0
-                                ).requires_grad_(True)
-                            )
-                            self._optimizer.state[group["params"][0]] = stored_state
-                            optimizable_tensors[group["name"]] = group["params"][0]
-                        else:
-                            group["params"][0] = nn.Parameter(
-                                torch.cat(
-                                    (group["params"][0], extension_tensor), dim=0
-                                ).requires_grad_(True)
-                            )
-                            optimizable_tensors[group["name"]] = group["params"][0]
+                optimizable_tensors = self._extend_param_group(param_dict)
 
                 self._xyz = optimizable_tensors["xyz"]
                 self._t = optimizable_tensors["t"]
@@ -640,15 +704,7 @@ class GaussianModel(AbstractModel):
                 (self._xyz.shape[0], 1), dtype=torch.float, device=self._device
             )
         )
-        for group in self._optimizer.param_groups:
-            if group["name"] == "opacity":
-                stored_state = self._optimizer.state.get(group["params"][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(new_opacity)
-                stored_state["exp_avg_sq"] = torch.zeros_like(new_opacity)
-                del self._optimizer.state[group["params"][0]]
-                group["params"][0] = nn.Parameter(new_opacity.requires_grad_(True))
-                self._optimizer.state[group["params"][0]] = stored_state
-                self._opacity = group["params"][0]
+        self._reset_param_group({"opacity": new_opacity})
 
     def _remove_outlier(self):
         max_bounds = torch.tensor(self._max_bounds_init, device=self._device)
@@ -661,43 +717,114 @@ class GaussianModel(AbstractModel):
     def _prune_points(self, mask: torch.Tensor):
         mask = mask.squeeze()
 
-        valid_points = torch.logical_not(mask)
+        valid_point_mask = torch.logical_not(mask)
 
-        optimizable_tensors = {}
+        param_list = [
+            "xyz",
+            "t",
+            "xyz_scales",
+            "t_scale",
+            "rotation",
+            "motion",
+            "omega",
+            "opacity",
+            "features_dc",
+        ]
+        param_dict = {param: valid_point_mask for param in param_list}
+
+        gaussian_optimizable_tensors = self._prune_param_group(param_dict)
+        self._xyz = gaussian_optimizable_tensors["xyz"]
+        self._t = gaussian_optimizable_tensors["t"]
+        self._xyz_scales = gaussian_optimizable_tensors["xyz_scales"]
+        self._t_scale = gaussian_optimizable_tensors["t_scale"]
+        self._rotation = gaussian_optimizable_tensors["rotation"]
+        self._motion = gaussian_optimizable_tensors["motion"]
+        self._omega = gaussian_optimizable_tensors["omega"]
+        self._opacity = gaussian_optimizable_tensors["opacity"]
+        self._features_dc = gaussian_optimizable_tensors["features_dc"]
+
+        self._xyz_gradient_accum = self._xyz_gradient_accum[valid_point_mask]
+        self._xyz_gradient_denom = self._xyz_gradient_denom[valid_point_mask]
+        self._max_radii2D = self._max_radii2D[valid_point_mask]
+        torch.cuda.empty_cache()
+
+    def _add_param_group(self, param_dict: dict):
+        for key, param_group in param_dict.items():
+            self._optimizer.add_param_group(param_group)
+
+    def _reset_param_group(self, param_dict: dict):
         for group in self._optimizer.param_groups:
-            if len(group["params"]) == 1 and group["name"] != "decoder":
+            if group["name"] in param_dict:
+                reset_value = param_dict[group["name"]]
+                stored_state = self._optimizer.state.get(group["params"][0], None)
+                stored_state["exp_avg"] = torch.zeros_like(reset_value)
+                stored_state["exp_avg_sq"] = torch.zeros_like(reset_value)
+                del self._optimizer.state[group["params"][0]]
+                group["params"][0] = nn.Parameter(reset_value.requires_grad_(True))
+                self._optimizer.state[group["params"][0]] = stored_state
+                self._opacity = group["params"][0]
+
+    def _prune_param_group(self, param_dict: dict) -> dict:
+        gaussian_optimizable_tensors = {}
+        for group in self._optimizer.param_groups:
+            if group["name"] in param_dict:
+                mask = param_dict[group["name"]]
                 stored_state = self._optimizer.state.get(group["params"][0], None)
                 if stored_state is not None:
-                    stored_state["exp_avg"] = stored_state["exp_avg"][valid_points]
-                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][
-                        valid_points
-                    ]
+                    stored_state["exp_avg"] = stored_state["exp_avg"][mask]
+                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
 
                     del self._optimizer.state[group["params"][0]]
                     group["params"][0] = nn.Parameter(
-                        (group["params"][0][valid_points].requires_grad_(True))
+                        (group["params"][0][mask].requires_grad_(True))
+                    )
+                    self._optimizer.state[group["params"][0]] = stored_state
+                    gaussian_optimizable_tensors[group["name"]] = group["params"][0]
+                else:
+                    group["params"][0] = nn.Parameter(
+                        group["params"][0][mask].requires_grad_(True)
+                    )
+                    gaussian_optimizable_tensors[group["name"]] = group["params"][0]
+        return gaussian_optimizable_tensors
+
+    def _extend_param_group(self, param_dict: dict) -> dict:
+        optimizable_tensors = {}
+        for group in self._optimizer.param_groups:
+            if group["name"] in param_dict:
+                extension_tensor = param_dict[group["name"]]
+                stored_state = self._optimizer.state.get(group["params"][0], None)
+                if stored_state is not None:
+                    stored_state["exp_avg"] = torch.cat(
+                        (
+                            stored_state["exp_avg"],
+                            torch.zeros_like(extension_tensor),
+                        ),
+                        dim=0,
+                    )
+                    stored_state["exp_avg_sq"] = torch.cat(
+                        (
+                            stored_state["exp_avg_sq"],
+                            torch.zeros_like(extension_tensor),
+                        ),
+                        dim=0,
+                    )
+
+                    del self._optimizer.state[group["params"][0]]
+                    group["params"][0] = nn.Parameter(
+                        torch.cat(
+                            (group["params"][0], extension_tensor), dim=0
+                        ).requires_grad_(True)
                     )
                     self._optimizer.state[group["params"][0]] = stored_state
                     optimizable_tensors[group["name"]] = group["params"][0]
                 else:
                     group["params"][0] = nn.Parameter(
-                        group["params"][0][valid_points].requires_grad_(True)
+                        torch.cat(
+                            (group["params"][0], extension_tensor), dim=0
+                        ).requires_grad_(True)
                     )
                     optimizable_tensors[group["name"]] = group["params"][0]
-        self._xyz = optimizable_tensors["xyz"]
-        self._t = optimizable_tensors["t"]
-        self._xyz_scales = optimizable_tensors["xyz_scales"]
-        self._t_scale = optimizable_tensors["t_scale"]
-        self._rotation = optimizable_tensors["rotation"]
-        self._motion = optimizable_tensors["motion"]
-        self._omega = optimizable_tensors["omega"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._features_dc = optimizable_tensors["features_dc"]
-
-        self._xyz_gradient_accum = self._xyz_gradient_accum[valid_points]
-        self._xyz_gradient_denom = self._xyz_gradient_denom[valid_points]
-        self._max_radii2D = self._max_radii2D[valid_points]
-        torch.cuda.empty_cache()
+        return optimizable_tensors
 
     def _get_xyz_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
         return (
@@ -711,4 +838,6 @@ class GaussianModel(AbstractModel):
         return torch.nn.functional.normalize(self._rotation + delta_t * self._omega)
 
     def _get_opacity_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
-        return torch.sigmoid(self._opacity) * trbfunction(delta_t / torch.exp(self._t_scale))
+        return torch.sigmoid(self._opacity) * trbfunction(
+            delta_t / torch.exp(self._t_scale)
+        )
