@@ -131,9 +131,11 @@ class TechnicolorDataset(AbstractDataset):
         self._ply_data = fetchPly(self._ply_path)
 
     def _read_colmap_cameras(self) -> list[Camera]:
-        logging.info("Reading cameras from colmap files")
         cameras = list[Camera]()
-        for time in tqdm(range(self._start_frame, self._start_frame + self._duration)):
+        for time in tqdm(
+            range(self._start_frame, self._start_frame + self._duration),
+            desc="Reading cameras progress",
+        ):
             subfolder_path = os.path.join(self._source_path, f"colmap_{time}")
             if not os.path.exists(subfolder_path):
                 raise FileNotFoundError(f"Colmap folder not found at {subfolder_path}")

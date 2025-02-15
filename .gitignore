@@ -6,3 +6,4 @@ submodules/simple-knn/simple_knn.egg-info/*
 configs/test/
 .vscode/
 output
+scripts/local

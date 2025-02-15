@@ -70,8 +70,8 @@ class GaussianModel(AbstractModel):
         self._screenspace_points = None
 
         # N-dimensional tensors
-        self._xyz_gradient_accum = None
-        self._xyz_gradient_denom = None
+        self._max_vspace_gradient = None
+        self._density_control_denom = None
         self._max_radii2D = None
 
         # N-dimensional optimizable tensors
@@ -93,7 +93,6 @@ class GaussianModel(AbstractModel):
         point_cloud = torch.tensor(np.asarray(pcd_data.points)).float().to(self._device)
         color = torch.tensor(np.asarray(pcd_data.colors)).float().to(self._device)
         times = torch.tensor(np.asarray(pcd_data.times)).float().to(self._device)
-        logging.info(f"Number of points at initialisation : {point_cloud.shape[0]}")
 
         dist2 = torch.clamp_min(
             distCUDA2(
@@ -145,8 +144,10 @@ class GaussianModel(AbstractModel):
         if self._enable_color_transform and self._color_transform_matrix_model_path_prior is not None:
             if os.path.exists(self._color_transform_matrix_model_path_prior):
                 self._color_transformation_matrix_dict = torch.load(
-                    self._color_transform_matrix_model_path_prior, device=self._device
+                    self._color_transform_matrix_model_path_prior
                 )
+                for key, matrix_param in self._color_transformation_matrix_dict.items():
+                    matrix_param.to(self._device)
             else:
                 logging.warning(
                     f"Color transformation matrix model not found at {self._color_transform_matrix_model_path_prior}"
@@ -257,8 +258,10 @@ class GaussianModel(AbstractModel):
                 )
             if os.path.exists(self._color_transform_matrix_model_path_prior):
                 self._color_transformation_matrix_dict = torch.load(
-                    self._color_transform_matrix_model_path_prior, device=self._device
+                    self._color_transform_matrix_model_path_prior
                 )
+                for key, matrix_param in self._color_transformation_matrix_dict.items():
+                    matrix_param.to(self._device)
             else:
                 logging.warning(
                     f"Color transformation matrix model not found at {self._color_transform_matrix_model_path_prior}"
@@ -448,11 +451,7 @@ class GaussianModel(AbstractModel):
 
         if self._enable_color_transform:
             camera_key = f"color_transformation_matrix_{camera.camera_info.camera_id}"
-            if camera_key not in self._color_transformation_matrix_dict:
-                logging.info(
-                    f"Color transformation matrix not found for test camera {camera_key}"
-                )
-            else:
+            if camera_key in self._color_transformation_matrix_dict:
                 matrix_param = self._color_transformation_matrix_dict[camera_key]
                 image_stack_with_alpha = torch.cat(
                     [rendered_image, torch.ones_like(rendered_image[:1])], dim=0
@@ -505,10 +504,10 @@ class GaussianModel(AbstractModel):
         return self._xyz.shape[0] if self._xyz is not None else 0
 
     def _setup(self):
-        self._xyz_gradient_accum = torch.zeros(
+        self._max_vspace_gradient = torch.zeros(
             (self._xyz.shape[0], 1), device=self._device
         )
-        self._xyz_gradient_denom = torch.zeros(
+        self._density_control_denom = torch.zeros(
             (self._xyz.shape[0], 1), device=self._device
         )
         self._max_radii2D = torch.zeros((self._xyz.shape[0]), device=self._device)
@@ -597,19 +596,31 @@ class GaussianModel(AbstractModel):
             self._max_radii2D[self._radii > 0] = torch.max(
                 self._max_radii2D[self._radii > 0], self._radii[self._radii > 0]
             )
-            self._xyz_gradient_accum[self._radii > 0] += torch.norm(
-                self._screenspace_points.grad[self._radii > 0, :2], dim=-1, keepdim=True
+            self._max_vspace_gradient[self._radii > 0] = torch.max(
+                self._max_vspace_gradient[self._radii > 0],
+                torch.norm(
+                    self._screenspace_points.grad[self._radii > 0, :2], dim=-1, keepdim=True
+                ),
             )
-            self._xyz_gradient_denom[self._radii > 0] += 1
+            self._density_control_denom[self._radii > 0] += 1
             if (iteration + 1) in range(
                 self._densification_start,
                 self._densification_end,
                 self._densification_step,
             ):
-
-                xyz_gradient_avg = self._xyz_gradient_accum / self._xyz_gradient_denom
-                xyz_gradient_avg[xyz_gradient_avg.isnan()] = 0
-                space_mask = xyz_gradient_avg.squeeze() > self._grad_threshold_xyz
+                space_mask = (
+                    self._max_vspace_gradient.squeeze()
+                    * torch.pow(
+                        self._density_control_denom.squeeze() / self._densification_step, 2
+                    )
+                    * self._max_radii2D.squeeze()
+                    * torch.sqrt(torch.sigmoid(self._opacity).squeeze())
+                    > self._grad_threshold_xyz
+                )
+                space_mask = torch.logical_and(
+                    space_mask,
+                    torch.sigmoid(self._opacity).squeeze() > 0.15
+                )
 
                 space_split_mask = torch.logical_and(
                     space_mask,
@@ -674,10 +685,10 @@ class GaussianModel(AbstractModel):
                 self._opacity = optimizable_tensors["opacity"]
                 self._features_dc = optimizable_tensors["features_dc"]
 
-                self._xyz_gradient_accum = torch.zeros(
+                self._max_vspace_gradient = torch.zeros(
                     (self._xyz.shape[0], 1), device=self._device
                 )
-                self._xyz_gradient_denom = torch.zeros(
+                self._density_control_denom = torch.zeros(
                     (self._xyz.shape[0], 1), device=self._device
                 )
                 self._max_radii2D = torch.zeros(
@@ -743,8 +754,8 @@ class GaussianModel(AbstractModel):
         self._opacity = gaussian_optimizable_tensors["opacity"]
         self._features_dc = gaussian_optimizable_tensors["features_dc"]
 
-        self._xyz_gradient_accum = self._xyz_gradient_accum[valid_point_mask]
-        self._xyz_gradient_denom = self._xyz_gradient_denom[valid_point_mask]
+        self._max_vspace_gradient = self._max_vspace_gradient[valid_point_mask]
+        self._density_control_denom = self._density_control_denom[valid_point_mask]
         self._max_radii2D = self._max_radii2D[valid_point_mask]
         torch.cuda.empty_cache()
 

@@ -48,6 +48,14 @@ class Trainer:
         self._preprocess_model_config()
         self._gaussians = self._GaussianModel(self._model_params)
 
+    @property
+    def model(self):
+        return self._gaussians
+
+    @property
+    def dataset(self):
+        return self._dataset
+
     def load_model(self):
         if self._load_iteration is None:
             os.makedirs(self._model_path, exist_ok=True)
@@ -124,6 +132,10 @@ class Trainer:
                     torchvision.utils.save_image(
                         render_pkgs["rendered_image"], save_path
                     )
+                    torchvision.utils.save_image(
+                        render_pkgs["depth"].float() / 255.0
+                        , save_path.replace(".png", "_depth.png")
+                    )
 
             if iteration < self._iterations - 1:
                 self._gaussians.optimizer.step()
@@ -181,6 +193,28 @@ class Trainer:
                 torchvision.utils.save_image(render_pkgs["rendered_image"], save_path)
         logging.info(f"SSIM: {ssim_sum / len(self._dataset.test_cameras)}")
         logging.info(f"Time: {time_sum / len(self._dataset.test_cameras)}")
+
+    def test_model(self, camera: Camera, save_path: str) -> float:
+        if len(self._gaussians) == 0:
+            raise ValueError("Need to load model before testing")
+        render_pkgs = self._gaussians.render_forward(
+            camera,
+            self._ForwardGaussianRasterizationSettings,
+            self._ForwardGaussianRasterizer,
+        )
+        save_path = (
+            os.path.join(
+                self._model_path,
+                "rendered",
+                f"{camera.camera_info.image_name.split('.')[0]}_{camera.camera_info.timestamp:05d}.png",
+            )
+            if save_path is None
+            else save_path
+        )
+        ssim_loss = ssim(render_pkgs["rendered_image"], camera.image)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torchvision.utils.save_image(render_pkgs["rendered_image"], save_path)
+        return ssim_loss
 
     def _preprocess_dataset_config(self):
         self._dataset_params["device"] = self._model_params["device"]
