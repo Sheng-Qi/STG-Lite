@@ -1,6 +1,5 @@
 submodules/forward_lite/forward_lite.egg-info/*
 submodules/gaussian_rasterization_ch3/diff_gaussian_rasterization_ch3.egg-info/*
-submodules/simple-knn/simple_knn.egg-info/*
 **/build/
 **/__pycache__/
 configs/test/

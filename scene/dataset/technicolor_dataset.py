@@ -179,6 +179,7 @@ class TechnicolorDataset(AbstractDataset):
                     R=R,
                     T=T,
                     image_folder=image_folder,
+                    mask_folder=None,
                     image_name=image_name,
                     camera_id=self._get_camera_index(image_name),
                     near=self._near,

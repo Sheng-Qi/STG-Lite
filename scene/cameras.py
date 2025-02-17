@@ -23,6 +23,7 @@ class CameraInfo:
     R: np.ndarray
     T: np.ndarray
     image_folder: str
+    mask_folder: str
     image_name: str
     camera_id: int
     near: float
@@ -110,7 +111,12 @@ class Camera:
     def image_mask(self) -> torch.Tensor:
         if self._image is None:
             self._load_and_process_image()
-        return self._image_mask
+        if self._image_mask is None:
+            return torch.ones_like(self._image[0:1, ...], device=self._device)
+        if self._int8_mode:
+            return self._image_mask.to(self._device).float() / 255.0
+        else:
+            return self._image_mask.to(self._device).float()
 
     @property
     def world_view_transform(self) -> torch.Tensor:
@@ -146,21 +152,41 @@ class Camera:
         ):
             raise ValueError("Image size does not match camera parameters")
         resize_image = PILtoTorch(image, resolution=self.resized_resolution)
-
-        image_gt = None
-
-        if resize_image.shape[0] == 4:
-            image_gt = resize_image[:3, ...]
-            self._image_mask = resize_image[3:4, ...]
-        elif resize_image.shape[0] == 3:
-            image_gt = resize_image
+        
+        if self._camera_info.mask_folder is not None:
+            image_mask = Image.open(
+                os.path.join(
+                    self._camera_info.mask_folder, self._camera_info.image_name
+                )
+            )
+            if (
+                self._camera_info.width != image_mask.width
+                or self._camera_info.height != image_mask.height
+            ):
+                raise ValueError("Mask size does not match camera parameters")
+            
+            image_mask = image_mask.convert("L")
+            resized_image_mask = PILtoTorch(image_mask, resolution=self.resized_resolution)
+        elif resize_image.shape[0] == 4:
+            resized_image_mask = resize_image[3:4, ...]
         else:
-            raise ValueError("Invalid image shape")
+            # To save memory, we don't store the mask if it is not provided
+            resized_image_mask = None
+
+        resized_image_gt = resize_image[:3, ...]
 
         if self._int8_mode:
-            self._image = (image_gt * 255).to(torch.uint8).to(self._data_device)
+            if resized_image_mask is not None:
+                self._image_mask = (resized_image_mask * 255).to(torch.uint8).to(self._data_device)
+            else:
+                self._image_mask = None
+            self._image = (resized_image_gt * 255).to(torch.uint8).to(self._data_device)
         else:
-            self._image = image_gt.clamp(0.0, 1.0).to(self._data_device)
+            if resized_image_mask is not None:
+                self._image_mask = resized_image_mask.clamp(0.0, 1.0).to(self._data_device)
+            else:
+                self._image_mask = None
+            self._image = resized_image_gt.clamp(0.0, 1.0).to(self._data_device)
 
         self._world_view_transform = (
             torch.tensor(
