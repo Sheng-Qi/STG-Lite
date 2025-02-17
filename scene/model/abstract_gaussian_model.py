@@ -16,6 +16,10 @@ class AbstractModel:
             self._device = torch.device("cuda")
 
     @property
+    def device(self) -> torch.device:
+        return self._device
+
+    @property
     @abstractmethod
     def optimizer(self) -> torch.optim.Optimizer:
         pass
@@ -32,25 +36,25 @@ class AbstractModel:
     def save(self, pcd_path: str):
         pass
 
+    def iteration_start(self, iteration: int, camera: Camera):
+        pass
+
+    def get_regularization_loss(self, camera: Camera) -> torch.Tensor:
+        return torch.tensor(0.0, device=self._device)
+
     @abstractmethod
     def render(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
         # This function is used for rendering with optimization
         pass
 
-    def render_forward(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
+    def render_forward_only(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
         # This function is used for forward rendering, i.e. rendering without optimization
         return self.render(
             camera, GRsetting, GRzer
-        )  # Default implementation. Should be overridden
-
-    def iteration_start(self, iteration: int, camera: Camera):
-        pass
+        )  # Default implementation. Can be overridden.
 
     def iteration_end(self, iteration: int, camera: Camera):
         pass
-
-    def get_regularization_loss(self, camera: Camera) -> torch.Tensor:
-        return torch.tensor(0.0, device=self._device)
 
     @abstractmethod
     def __len__(self) -> int:

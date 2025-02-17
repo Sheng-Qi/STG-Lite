@@ -6,11 +6,7 @@ import logging
 
 from scene.dataset.basic_colmap_dataset import BasicColmapDataset
 from scene.cameras import CameraInfo, Camera
-from utils.colmap_utils import (
-    qvec2rotmat,
-    read_points3D_binary,
-    read_points3D_text
-)
+from utils.colmap_utils import qvec2rotmat, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import focal2fov
 from utils.ply_utils import storePly4D, fetchPly4D
 
@@ -93,7 +89,7 @@ class TechnicolorDataset(BasicColmapDataset):
                     R=R,
                     T=T,
                     image_folder=image_folder,
-                    mask_folder=None,
+                    mask_folder=self._mask_path,
                     image_name=image_name,
                     camera_id=self._get_camera_index(image_name),
                     near=self._near,

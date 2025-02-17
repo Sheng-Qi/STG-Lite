@@ -4,5 +4,9 @@ from scene.model.abstract_gaussian_model import AbstractModel
 
 
 def parse_model(model: str) -> Type[AbstractModel]:
-    model_module = import_module(f"scene.model.{model}")
-    return getattr(model_module, "GaussianModel")
+    MODEL_DICT = {
+        "basic": ["basic_gaussian_model", "BasicGaussianModel"],
+        "spacetime": ["spacetime_gaussian_model", "SpacetimeGaussianModel"],
+    }
+    model_module = import_module("scene.model." + MODEL_DICT[model][0])
+    return getattr(model_module, MODEL_DICT[model][1])

@@ -26,6 +26,7 @@ class BasicColmapDataset(AbstractDataset):
     def __init__(self, dataset_params: dict):
         super().__init__(dataset_params)
         self._source_path: str = dataset_params["source_path"]
+        self._mask_path: str = dataset_params["mask_path"]
         self._resolution_scale: float = dataset_params["resolution_scale"]
         self._is_eval: bool = dataset_params["is_eval"]
         self._train_test_split_seed: int = dataset_params["train_test_split_seed"]
@@ -105,7 +106,7 @@ class BasicColmapDataset(AbstractDataset):
         else:
             self._train_cameras = cameras
             self._test_cameras = list[Camera]()
-    
+
     def _load_ply(self):
         if self._ply_path is None:
             self._ply_path = os.path.join(
@@ -174,7 +175,7 @@ class BasicColmapDataset(AbstractDataset):
                 R=R,
                 T=T,
                 image_folder=image_folder,
-                mask_folder=None,
+                mask_folder=self._mask_path,
                 image_name=image_name,
                 camera_id=self._get_camera_index(image_name),
                 near=self._near,
@@ -182,7 +183,7 @@ class BasicColmapDataset(AbstractDataset):
                 trans=np.array([0, 0, 0]),
                 scale=1.0,
                 timestamp=None,
-                timestamp_ratio=None
+                timestamp_ratio=None,
             )
             cameras.append(
                 Camera(
@@ -223,10 +224,15 @@ class BasicColmapDataset(AbstractDataset):
     def _find_and_read_colmap_files(
         self, colmap_data_path: str
     ) -> tuple[dict[int, ColmapImage], dict[int, ColmapCamera]]:
-        paths = [("images.bin", "cameras.bin"), ("images.txt", "cameras.txt")]
+        paths = [
+            ("0/images.bin", "0/cameras.bin"),
+            ("0/images.txt", "0/cameras.txt"),
+            ("images.bin", "cameras.bin"),
+            ("images.txt", "cameras.txt"),
+        ]
         for images_file, cameras_file in paths:
-            images_path = os.path.join(colmap_data_path, "sparse", "0", images_file)
-            cameras_path = os.path.join(colmap_data_path, "sparse", "0", cameras_file)
+            images_path = os.path.join(colmap_data_path, "sparse", images_file)
+            cameras_path = os.path.join(colmap_data_path, "sparse", cameras_file)
             if os.path.exists(images_path) and os.path.exists(cameras_path):
                 if images_file.endswith(".bin"):
                     cam_extrinsics = read_extrinsics_binary(images_path)
@@ -245,14 +251,17 @@ class BasicColmapDataset(AbstractDataset):
             raise ValueError(f"No camera index found in {image_name}")
 
     def _create_ply_from_colmap(self):
-        bin_path = os.path.join(
-            self._source_path, "sparse", "0", "points3D.bin"
-        )
-        txt_path = os.path.join(
-            self._source_path, "sparse", "0", "points3D.txt"
-        )
-        if os.path.exists(bin_path):
-            xyz, rgb, _ = read_points3D_binary(bin_path)
-        else:
-            xyz, rgb, _ = read_points3D_text(txt_path)
-        storePly3D(self._ply_path, xyz, rgb)
+        paths = [
+            "0/points3D.bin", "0/points3D.txt", "points3D.bin", "points3D.txt"
+        ]
+
+        for points3D_file in paths:
+            points3D_path = os.path.join(self._source_path, "sparse", points3D_file)
+            if os.path.exists(points3D_path):
+                if points3D_file.endswith(".bin"):
+                    xyz, rgb, _ = read_points3D_binary(points3D_path)
+                else:
+                    xyz, rgb, _ = read_points3D_text(points3D_path)
+                storePly3D(self._ply_path, xyz, rgb)
+                return
+        raise FileNotFoundError(f"Colmap points3D files not found at {self._source_path}")

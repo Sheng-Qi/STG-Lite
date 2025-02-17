@@ -78,7 +78,11 @@ class Trainer:
             with open(os.path.join(self._model_path, "cameras.json"), "w") as file:
                 json.dump(json_cams, file, indent=2)
             with open(os.path.join(self._model_path, "cfg_args"), "w") as file:
-                txt_content = "Namespace(sh_degree=3)"
+                txt_content = (
+                    "Namespace(sh_degree=3)"
+                    if self._model == "spacetime"
+                    else "Namespace(sh_degree=0)"
+                )
                 file.write(txt_content)
             self._gaussians.init(self._dataset.ply_data)
         else:
@@ -115,27 +119,11 @@ class Trainer:
                 self._GaussianRasterizer,
             )
             loss = get_loss(
-                render_pkgs["rendered_image"],
+                render_pkgs["rendered_image"] * selected_train_camera.image_mask,
                 selected_train_camera.image,
                 self._lambda_dssim,
             ) + self._gaussians.get_regularization_loss(camera=selected_train_camera)
             loss.backward()
-
-            if self._debug:
-                with torch.no_grad():
-                    save_path = os.path.join(
-                        self._model_path,
-                        "debug",
-                        f"{selected_train_camera.camera_info.image_name.split('.')[0]}_{iteration}_{selected_train_camera.camera_info.timestamp}.png",
-                    )
-                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                    torchvision.utils.save_image(
-                        render_pkgs["rendered_image"], save_path
-                    )
-                    torchvision.utils.save_image(
-                        render_pkgs["depth"].float() / 255.0
-                        , save_path.replace(".png", "_depth.png")
-                    )
 
             if iteration < self._iterations - 1:
                 self._gaussians.optimizer.step()
@@ -173,40 +161,46 @@ class Trainer:
         if len(self._dataset.test_cameras) == 0:
             raise ValueError("No test cameras in dataset, please set is_eval to True")
         ssim_sum = 0.0
-        time_sum = 0.0
         with torch.no_grad():
             for test_camera in self._dataset.test_cameras:
-                render_pkgs = self._gaussians.render_forward(
+                render_pkgs = self._gaussians.render_forward_only(
                     test_camera,
                     self._ForwardGaussianRasterizationSettings,
                     self._ForwardGaussianRasterizer,
                 )
-                time = render_pkgs["duration"]
                 ssim_sum += ssim(render_pkgs["rendered_image"], test_camera.image)
-                time_sum += time
+                suffix = (
+                    f"_{test_camera.camera_info.timestamp}"
+                    if self._dataset_type == "technicolor"
+                    else ""
+                )
                 save_path = os.path.join(
                     self._model_path,
                     "rendered",
-                    f"{test_camera.camera_info.image_name.split('.')[0]}_{test_camera.camera_info.timestamp:05d}.png",
+                    f"{test_camera.camera_info.image_name.split('.')[0]}_{suffix}.{test_camera.camera_info.image_name.split('.')[1]}",
                 )
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 torchvision.utils.save_image(render_pkgs["rendered_image"], save_path)
         logging.info(f"SSIM: {ssim_sum / len(self._dataset.test_cameras)}")
-        logging.info(f"Time: {time_sum / len(self._dataset.test_cameras)}")
 
     def test_model(self, camera: Camera, save_path: str) -> float:
         if len(self._gaussians) == 0:
             raise ValueError("Need to load model before testing")
-        render_pkgs = self._gaussians.render_forward(
+        render_pkgs = self._gaussians.render_forward_only(
             camera,
             self._ForwardGaussianRasterizationSettings,
             self._ForwardGaussianRasterizer,
+        )
+        suffix = (
+            f"_{camera.camera_info.timestamp}"
+            if camera.camera_info.timestamp is not None
+            else ""
         )
         save_path = (
             os.path.join(
                 self._model_path,
                 "rendered",
-                f"{camera.camera_info.image_name.split('.')[0]}_{camera.camera_info.timestamp:05d}.png",
+                f"{camera.camera_info.image_name.split('.')[0]}_{suffix}.{camera.camera_info.image_name.split('.')[1]}",
             )
             if save_path is None
             else save_path

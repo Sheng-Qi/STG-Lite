@@ -1,0 +1,67 @@
+TRAINER:
+  renderer: diff_gaussian_rasterization_ch3
+  forward_renderer: forward_lite
+  model: spacetime
+  model_path: output/spacetime
+  load_iteration: null
+  iterations: 30000
+  saving_iterations: [200, 2000, 4000, 8000, 12000, 16000, 20000, 25000, 29999]
+  trainer_seed: 0
+  lambda_dssim: 0.2
+  model_params:
+    device: cuda
+    enable_color_transform: true
+    lambda_color_transform: 0.01
+    color_transform_matrix_model_path_prior: null
+    t_scale_init: -2.0
+    split_num: 4
+    split_ratio: 0.5
+    grad_threshold_xyz: 0.001
+    percent_dense_xyz: 0.01
+    densification_start: 2000
+    densification_step: 100
+    densification_end: 15000
+    reset_opacity_start: 3000
+    reset_opacity_step: 3000
+    reset_opacity_end: 18000
+    prune_points_start: 0
+    prune_points_step: 10
+    prune_points_end: 15000
+    prune_threshold: 0.005
+    remove_outlier_iterations: []
+    learning_rate:
+      xyz_init: 0.00016
+      xyz_final: 0.0000016
+      xyz_delay_mult: 0.01
+      xyz_delay_steps: 100
+      xyz_max_steps: 30000
+      t: 0.0001
+      xyz_scales: 0.005
+      t_scale: 0.03
+      rotation: 0.001
+      motion: 3.5
+      omega: 0.0001
+      opacity: 0.05
+      features_dc: 0.0025
+      color_transformation_init: 0.05
+      color_transformation_final: 0.0005
+      color_transformation_delay_mult: 0.01
+      color_transformation_delay_steps: 1000
+      color_transformation_max_steps: 30000
+    white_background: false
+  dataset_type: technicolor
+  dataset_params:
+    source_path: /home/wsq/Data/SSD/ours/scene1_opera_girl/
+    mask_path: null
+    resolution_scale: 2.0
+    frame_rate: 60
+    start_frame: 0
+    duration: 60
+    is_eval: true
+    train_test_split_seed: 0
+    near: 0.01
+    far: 100.0
+    lazy_load: true
+    ply_path: null
+    data_device: cpu
+    int8_mode: true

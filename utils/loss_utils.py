@@ -34,14 +34,12 @@ def rel_loss(network_output, gt):
     return torch.abs((network_output - gt) / (gt + 0.001)).mean()
 
 
-def color_transform_regularization_loss(
-    param_color_transforms_matrix_1,
-    param_color_transforms_matrix_2,
-    lambda_color_transforms,
+def matrix_loss(
+    param_matrix_1,
+    param_matrix_2,
+    lambda_matrix,
 ):
-    return lambda_color_transforms * torch.norm(
-        param_color_transforms_matrix_1 - param_color_transforms_matrix_2, p="fro"
-    )
+    return lambda_matrix * torch.norm(param_matrix_1 - param_matrix_2, p="fro")
 
 
 def gaussian(window_size, sigma):
