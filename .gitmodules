@@ -5,3 +5,7 @@
 [submodule "submodules/forward_lite/third_party/glm"]
 	path = submodules/forward_lite/third_party/glm
 	url = https://github.com/g-truc/glm.git
+
+[submodule "submodules/simple-knn"]
+	path = submodules/simple-knn
+	url = https://gitlab.inria.fr/bkerbl/simple-knn.git
