@@ -10,7 +10,7 @@ from tqdm import tqdm
 import logging
 from scene.cameras import Camera
 from scene.dataset import parse_dataset
-from scene.model import parse_model
+from scene.model import parse_model, parse_cfg_args
 from utils.system_utils import searchForMaxIteration, parse_renderer
 from utils.camera_utils import camera_to_JSON
 from utils.loss_utils import get_loss, ssim
@@ -20,7 +20,7 @@ class Trainer:
     def __init__(self, trainer_options: dict, debug: bool = False):
         self._renderer: str = trainer_options["renderer"]
         self._forward_renderer: str = trainer_options["forward_renderer"]
-        self._model: str = trainer_options["model"]
+        self._model_type: str = trainer_options["model_type"]
         self._model_path: str = trainer_options["model_path"]
         self._load_iteration: int = trainer_options["load_iteration"]
         self._saving_iterations: list[int] = trainer_options["saving_iterations"]
@@ -38,7 +38,7 @@ class Trainer:
         self._ForwardGaussianRasterizer, self._ForwardGaussianRasterizationSettings = (
             parse_renderer(self._forward_renderer)
         )
-        self._GaussianModel = parse_model(self._model)
+        self._GaussianModel = parse_model(self._model_type)
         self._progress_bar = None
         self._ema_loss_for_log = None
 
@@ -78,11 +78,7 @@ class Trainer:
             with open(os.path.join(self._model_path, "cameras.json"), "w") as file:
                 json.dump(json_cams, file, indent=2)
             with open(os.path.join(self._model_path, "cfg_args"), "w") as file:
-                txt_content = (
-                    "Namespace(sh_degree=3)"
-                    if self._model == "spacetime"
-                    else "Namespace(sh_degree=0)"
-                )
+                txt_content = parse_cfg_args(self._model_type)
                 file.write(txt_content)
             self._gaussians.init(self._dataset)
         else:
@@ -111,7 +107,9 @@ class Trainer:
                 self._dataset.train_cameras
             )
             with torch.no_grad():
-                self._gaussians.iteration_start(iteration, selected_train_camera, self._dataset)
+                self._gaussians.iteration_start(
+                    iteration, selected_train_camera, self._dataset
+                )
             self._gaussians.optimizer.zero_grad(set_to_none=True)
             render_pkgs = self._gaussians.render(
                 selected_train_camera,
@@ -122,13 +120,17 @@ class Trainer:
                 render_pkgs["rendered_image"] * selected_train_camera.image_mask,
                 selected_train_camera.image,
                 self._lambda_dssim,
-            ) + self._gaussians.get_regularization_loss(camera=selected_train_camera)
+            ) + self._gaussians.get_regularization_loss(
+                camera=selected_train_camera, dataset=self._dataset
+            )
             loss.backward()
 
             if iteration < self._iterations - 1:
                 self._gaussians.optimizer.step()
             with torch.no_grad():
-                self._gaussians.iteration_end(iteration, selected_train_camera, self._dataset)
+                self._gaussians.iteration_end(
+                    iteration, selected_train_camera, self._dataset
+                )
             with torch.no_grad():
                 self._ema_loss_for_log = (
                     (0.4 * loss.item() + 0.6 * self._ema_loss_for_log)

@@ -1,7 +1,7 @@
 TRAINER:
   renderer: diff_gaussian_rasterization
   forward_renderer: diff_gaussian_rasterization
-  model: basic
+  model_type: basic
   model_path: output/basic
   load_iteration: null
   iterations: 30000

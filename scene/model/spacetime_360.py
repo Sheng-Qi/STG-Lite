@@ -1,10 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Type
 from plyfile import PlyData
 
-from scene.cameras import Camera
 from scene.model.spacetime_gaussian_model import SpacetimeGaussianModel
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import inverse_sigmoid
@@ -16,6 +14,9 @@ class Spacetime360Model(SpacetimeGaussianModel):
 
         self._static_ply_path: str = config["static_ply_path"]
         self._border_image_threshold: int = config["border_image_threshold"]
+        self._enable_simplified_border_method: bool = config[
+            "enable_simplified_border_method"
+        ]
 
         self._static_xyz: torch.Tensor = None
         self._static_xyz_scales: torch.Tensor = None
@@ -31,6 +32,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
         self._static_screenspace_points: torch.Tensor = None
 
         self._train_cameras = None
+        self._camset = None
         self._cached_count_in_cameras = None
 
     @property
@@ -106,11 +108,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
         return torch.cat(
             [
                 super().opacity,
-                torch.where(
-                    self._center_image_mask,
-                    self._static_opacity,
-                    self._static_opacity.detach(),
-                ),
+                self._static_opacity,
             ],
             dim=0,
         )
@@ -120,11 +118,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
         return torch.cat(
             [
                 super().opacity_active,
-                torch.where(
-                    self._center_image_mask,
-                    torch.sigmoid(self._static_opacity),
-                    torch.sigmoid(self._static_opacity).detach(),
-                ),
+                torch.sigmoid(self._static_opacity),
             ],
             dim=0,
         )
@@ -132,10 +126,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
     @property
     def features_dc(self) -> torch.Tensor:
         return torch.cat(
-            [
-                super().features_dc,
-                self._static_features_dc
-            ],
+            [super().features_dc, self._static_features_dc],
             dim=0,
         )
 
@@ -170,7 +161,9 @@ class Spacetime360Model(SpacetimeGaussianModel):
         return torch.cat(
             [
                 super().t_scale_active,
-                torch.full_like(self._static_t, torch.exp(torch.tensor(self._STATIC_T_SCALE))),
+                torch.full_like(
+                    self._static_t, torch.exp(torch.tensor(self._STATIC_T_SCALE))
+                ),
             ],
             dim=0,
         )
@@ -216,20 +209,36 @@ class Spacetime360Model(SpacetimeGaussianModel):
     def init(self, dataset):
         super().init(dataset)
         self._train_cameras = dataset.train_cameras
+        self._camset = {
+            camera.camera_info.camera_id: camera for camera in self._train_cameras
+        }
 
     def load(self, pcd_path, dataset):
         super().load(pcd_path, dataset)
         self._train_cameras = dataset.train_cameras
+        self._camset = {
+            camera.camera_info.camera_id: camera for camera in self._train_cameras
+        }
 
     def iteration_start(self, iteration, camera, dataset):
         super().iteration_start(iteration, camera, dataset)
         self._update_count_in_cameras()
 
     def _update_count_in_cameras(self):
-        self._cached_count_in_cameras = torch.stack(
-            [camera.check_in_image(self._static_xyz) for camera in self._train_cameras],
-            dim=0,
-        ).sum(dim=0)
+        self._cached_count_in_cameras = torch.zeros_like(
+            self._static_xyz[:, 0], device=self._device
+        )
+        if self._enable_simplified_border_method:
+            for camera in self._camset.values():
+                self._cached_count_in_cameras += camera.check_in_image(self._static_xyz)
+            self._cached_count_in_cameras = (
+                self._cached_count_in_cameras
+                / len(self._camset)
+                * len(self._train_cameras)
+            )
+        else:
+            for camera in self._train_cameras:
+                self._cached_count_in_cameras += camera.check_in_image(self._static_xyz)
 
     def _init_point_cloud_parameters(self, pcd_data: BasicPointCloud):
         super()._init_point_cloud_parameters(pcd_data)
@@ -439,7 +448,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             "static_rotation",
             "static_motion",
             "static_omega",
-            "static_opacity"
+            "static_opacity",
         ]
         param_dict = {param: valid_point_mask for param in param_list}
         gaussian_optimizable_tensors = self._prune_param_group(param_dict)

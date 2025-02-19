@@ -40,7 +40,7 @@ class AbstractModel:
     def iteration_start(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         pass
 
-    def get_regularization_loss(self, camera: Camera) -> torch.Tensor:
+    def get_regularization_loss(self, camera: Camera, dataset: AbstractDataset) -> torch.Tensor:
         return torch.tensor(0.0, device=self._device)
 
     @abstractmethod

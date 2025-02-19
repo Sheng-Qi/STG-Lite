@@ -205,8 +205,10 @@ class BasicGaussianModel(AbstractModel):
             "depth": self._rendered_depth,
         }
 
-    def get_regularization_loss(self, camera: Camera) -> torch.Tensor:
-        loss = super().get_regularization_loss(camera)
+    def get_regularization_loss(
+        self, camera: Camera, dataset: AbstractDataset
+    ) -> torch.Tensor:
+        loss = super().get_regularization_loss(camera, dataset)
         if self._enable_color_transform:
             loss += self._calculate_color_regularization_loss(camera)
         return loss
@@ -308,6 +310,7 @@ class BasicGaussianModel(AbstractModel):
         def RGB2SH(rgb):
             C0 = 0.28209479177387814
             return (rgb - 0.5) / C0
+
         os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
 
         xyz = self.xyz.detach().cpu().numpy()
@@ -424,7 +427,9 @@ class BasicGaussianModel(AbstractModel):
         )
 
     def _initialize_learning_rate(self):
-        self._optimizer = torch.optim.Adam(self._initial_param_groups, lr=0.0, eps=1e-15)
+        self._optimizer = torch.optim.Adam(
+            self._initial_param_groups, lr=0.0, eps=1e-15
+        )
         self._xyz_scheduler_args = get_expon_lr_func(
             lr_init=self._learning_rate["xyz_init"] * self._cameras_extent,
             lr_final=self._learning_rate["xyz_final"] * self._cameras_extent,

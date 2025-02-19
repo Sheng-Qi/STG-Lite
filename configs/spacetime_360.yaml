@@ -1,7 +1,7 @@
 TRAINER:
   renderer: diff_gaussian_rasterization_ch3
   forward_renderer: forward_lite
-  model: spacetime_360
+  model_type: spacetime_360
   model_path: output/spacetime_360
   load_iteration: null
   iterations: 30000
@@ -50,7 +50,8 @@ TRAINER:
       color_transformation_max_steps: 30000
     white_background: false
     static_ply_path: /data/yzx/ours/scene6_puppy_360/colmap/input_ply/static.ply
-    border_image_threshold: 30
+    border_image_threshold: 90
+    enable_simplified_border_method: true
   dataset_type: technicolor
   dataset_params:
     source_path: /data/yzx/ours/scene6_puppy_360/colmap

@@ -68,6 +68,7 @@ class Camera:
 
         if not lazy_load:
             self._load_and_process_image()
+            self._pre_calculate_matrix()
 
     @property
     def resized_resolution(self) -> tuple[int, int]:
@@ -122,25 +123,25 @@ class Camera:
     @property
     def world_view_transform(self) -> torch.Tensor:
         if self._world_view_transform is None:
-            self._load_and_process_image()
+            self._pre_calculate_matrix()
         return self._world_view_transform
 
     @property
     def projection_matrix(self) -> torch.Tensor:
         if self._projection_matrix is None:
-            self._load_and_process_image()
+            self._pre_calculate_matrix()
         return self._projection_matrix
 
     @property
     def full_proj_transform(self) -> torch.Tensor:
         if self._full_proj_transform is None:
-            self._load_and_process_image()
+            self._pre_calculate_matrix()
         return self._full_proj_transform
 
     @property
     def camera_center(self) -> torch.Tensor:
         if self._camera_center is None:
-            self._load_and_process_image()
+            self._pre_calculate_matrix()
         return self._camera_center
 
     def check_in_image(self, xyzs: torch.Tensor) -> torch.Tensor:
@@ -201,6 +202,7 @@ class Camera:
                 self._image_mask = None
             self._image = resized_image_gt.clamp(0.0, 1.0).to(self._data_device)
 
+    def _pre_calculate_matrix(self):
         self._world_view_transform = (
             torch.tensor(
                 getWorld2View2(

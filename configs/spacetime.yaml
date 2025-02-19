@@ -1,7 +1,7 @@
 TRAINER:
   renderer: diff_gaussian_rasterization_ch3
   forward_renderer: forward_lite
-  model: spacetime
+  model_type: spacetime
   model_path: output/spacetime
   load_iteration: null
   iterations: 30000
