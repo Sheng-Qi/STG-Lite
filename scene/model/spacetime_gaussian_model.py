@@ -9,7 +9,7 @@ from plyfile import PlyData, PlyElement
 from scene.model.basic_gaussian_model import BasicGaussianModel
 from scene.cameras import Camera
 from utils.math_utils import trbfunction
-from utils.general_utils import get_expon_lr_func, build_rotation
+from utils.general_utils import build_rotation 
 from utils.graphics_utils import BasicPointCloud
 
 
@@ -19,14 +19,18 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         super().__init__(model_params)
         self._t_scale_init: float = model_params["t_scale_init"]
 
-        self._t = None
-        self._t_scale = None
-        self._motion = None
-        self._omega = None
+        self._t: torch.Tensor = None
+        self._t_scale: torch.Tensor = None
+        self._motion: torch.Tensor = None
+        self._omega: torch.Tensor = None
 
     @property
     def t(self) -> torch.Tensor:
         return self._t
+
+    @property
+    def t_scale(self) -> torch.Tensor:
+        return self._t_scale
 
     @property
     def t_scale_active(self) -> torch.Tensor:
@@ -42,21 +46,21 @@ class SpacetimeGaussianModel(BasicGaussianModel):
 
     def xyz_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
         return (
-            self._xyz
-            + self._motion[:, :3] * delta_t
-            + self._motion[:, 3:6] * delta_t**2
-            + self._motion[:, 6:] * delta_t**3
+            self.xyz
+            + self.motion[:, :3] * delta_t
+            + self.motion[:, 3:6] * delta_t**2
+            + self.motion[:, 6:] * delta_t**3
         )
 
     def rotation_active_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
-        return torch.nn.functional.normalize(self._rotation + delta_t * self._omega)
+        return torch.nn.functional.normalize(self.rotation + delta_t * self.omega)
 
     def opacity_active_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
         return self.opacity_active * trbfunction(delta_t / self.t_scale_active)
 
     def render(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
         self._screenspace_points = torch.zeros_like(
-            self._xyz, dtype=self._xyz.dtype, requires_grad=True, device=self._device
+            self.xyz, dtype=self.xyz.dtype, requires_grad=True, device=self.device
         )
         self._screenspace_points.retain_grad()
         raster_settings = GRsetting(
@@ -76,22 +80,22 @@ class SpacetimeGaussianModel(BasicGaussianModel):
 
         delta_t = (
             torch.full(
-                (self._xyz.shape[0], 1),
+                (self.xyz.shape[0], 1),
                 camera.camera_info.timestamp_ratio,
-                dtype=self._xyz.dtype,
+                dtype=self.xyz.dtype,
                 requires_grad=False,
-                device=self._device,
+                device=self.device,
             )
-            - self._t
+            - self.t
         )
 
         self._rendered_image, self._radii, self._rendered_depth = rasterizer(
             means3D=self.xyz_projected(delta_t),
             means2D=self._screenspace_points,
             shs=None,
-            colors_precomp=self._features_dc,
+            colors_precomp=self.features_dc,
             opacities=self.opacity_active_projected(delta_t),
-            scales=torch.exp(self._xyz_scales),
+            scales=self.xyz_scales_active,
             rotations=self.rotation_active_projected(delta_t),
             cov3D_precomp=None,
         )
@@ -107,8 +111,8 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         }
 
     def render_forward_only(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
-        self._screenspace_points = torch.zeros_like(
-            self._xyz, dtype=self._xyz.dtype, requires_grad=True, device=self._device
+        screenspace_points = torch.zeros_like(
+            self.xyz, dtype=self.xyz.dtype, requires_grad=True, device=self.device
         )
         start_time = torch.cuda.Event(enable_timing=True)
         end_time = torch.cuda.Event(enable_timing=True)
@@ -131,26 +135,26 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         rasterizer = GRzer(raster_settings=raster_settings)
         delta_t = (
             torch.full(
-                (self._xyz.shape[0], 1),
+                (self.xyz.shape[0], 1),
                 camera.camera_info.timestamp_ratio,
-                dtype=self._xyz.dtype,
+                dtype=self.xyz.dtype,
                 requires_grad=False,
-                device=self._device,
+                device=self.device,
             )
-            - self._t
+            - self.t
         )
         rendered_image, radii = rasterizer(
             timestamp=camera.camera_info.timestamp_ratio,
-            trbfcenter=self._t,
-            trbfscale=torch.exp(self._t_scale),
-            motion=self._motion,
-            means3D=self._xyz,
-            means2D=self._screenspace_points,
+            trbfcenter=self.t,
+            trbfscale=self.t_scale_active,
+            motion=self.motion,
+            means3D=self.xyz,
+            means2D=screenspace_points,
             shs=None,
-            colors_precomp=self._features_dc,
-            opacities=torch.sigmoid(self._opacity),
-            scales=torch.exp(self._xyz_scales),
-            rotations=self._get_rotation_projected(delta_t),
+            colors_precomp=self.features_dc,
+            opacities=self.opacity_active,
+            scales=self.xyz_scales_active,
+            rotations=self.rotation_active_projected(delta_t),
             cov3D_precomp=None,
         )
 
@@ -232,16 +236,16 @@ class SpacetimeGaussianModel(BasicGaussianModel):
     def _save_point_cloud_parameters(self, pcd_path):
         os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
 
-        xyz = self._xyz.detach().cpu().numpy()
-        trbf_center = self._t.detach().cpu().numpy()
-        trbf_scale = self._t_scale.detach().cpu().numpy()
+        xyz = self.xyz.detach().cpu().numpy()
+        trbf_center = self.t.detach().cpu().numpy()
+        trbf_scale = self.t_scale.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
-        motion = self._motion.detach().cpu().numpy()
-        f_dc = self._features_dc.detach().cpu().numpy()
-        opacity = self._opacity.detach().cpu().numpy()
-        scale = self._xyz_scales.detach().cpu().numpy()
-        rotation = self._rotation.detach().cpu().numpy()
-        omega = self._omega.detach().cpu().numpy()
+        motion = self.motion.detach().cpu().numpy()
+        f_dc = self.features_dc.detach().cpu().numpy()
+        opacity = self.opacity.detach().cpu().numpy()
+        scale = self.xyz_scales.detach().cpu().numpy()
+        rotation = self.rotation.detach().cpu().numpy()
+        omega = self.omega.detach().cpu().numpy()
 
         list_of_attributes = []
         list_of_attributes.extend(["x", "y", "z"])
@@ -277,32 +281,18 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         pcd_vertex_element = PlyElement.describe(elements, "vertex")
         PlyData([pcd_vertex_element]).write(pcd_path)
 
-    def _initialize_learning_rate(self):
-        l = [
-            {
-                "params": [self._xyz],
-                "lr": self._learning_rate["xyz_init"] * self._cameras_extent,
-                "name": "xyz",
-            },
+    @property
+    def _initial_param_groups(self) -> list:
+        time_param_groups = [
             {
                 "params": [self._t],
                 "lr": self._learning_rate["t"],
                 "name": "t",
             },
             {
-                "params": [self._xyz_scales],
-                "lr": self._learning_rate["xyz_scales"],
-                "name": "xyz_scales",
-            },
-            {
                 "params": [self._t_scale],
                 "lr": self._learning_rate["t_scale"],
                 "name": "t_scale",
-            },
-            {
-                "params": [self._rotation],
-                "lr": self._learning_rate["rotation"],
-                "name": "rotation",
             },
             {
                 "params": [self._motion],
@@ -316,33 +306,9 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 "params": [self._omega],
                 "lr": self._learning_rate["omega"],
                 "name": "omega",
-            },
-            {
-                "params": [self._opacity],
-                "lr": self._learning_rate["opacity"],
-                "name": "opacity",
-            },
-            {
-                "params": [self._features_dc],
-                "lr": self._learning_rate["features_dc"],
-                "name": "features_dc",
-            },
+            }
         ]
-        self._optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self._xyz_scheduler_args = get_expon_lr_func(
-            lr_init=self._learning_rate["xyz_init"] * self._cameras_extent,
-            lr_final=self._learning_rate["xyz_final"] * self._cameras_extent,
-            lr_delay_steps=self._learning_rate["xyz_delay_steps"],
-            lr_delay_mult=self._learning_rate["xyz_delay_mult"],
-            max_steps=self._learning_rate["xyz_max_steps"],
-        )
-        self._color_transformation_scheduler_args = get_expon_lr_func(
-            lr_init=self._learning_rate["color_transformation_init"],
-            lr_final=self._learning_rate["color_transformation_final"],
-            lr_delay_steps=self._learning_rate["color_transformation_delay_steps"],
-            lr_delay_mult=self._learning_rate["color_transformation_delay_mult"],
-            max_steps=self._learning_rate["color_transformation_max_steps"],
-        )
+        return super()._initial_param_groups + time_param_groups
 
     def _density_control(self, iteration: int):
         if iteration in range(self._densification_start, self._densification_end):

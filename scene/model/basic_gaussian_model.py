@@ -8,6 +8,7 @@ import math
 from plyfile import PlyData, PlyElement
 from simple_knn._C import distCUDA2
 
+from scene.dataset.abstract_dataset import AbstractDataset
 from scene.model.abstract_gaussian_model import AbstractModel
 from scene.cameras import Camera
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
@@ -84,16 +85,28 @@ class BasicGaussianModel(AbstractModel):
         return self._optimizer
 
     @property
-    def xyz_projected(self) -> torch.Tensor:
+    def xyz(self) -> torch.Tensor:
         return self._xyz
+
+    @property
+    def xyz_scales(self) -> torch.Tensor:
+        return self._xyz_scales
 
     @property
     def xyz_scales_active(self) -> torch.Tensor:
         return torch.exp(self._xyz_scales)
 
     @property
+    def rotation(self) -> torch.Tensor:
+        return self._rotation
+
+    @property
     def rotation_active(self) -> torch.Tensor:
         return torch.nn.functional.normalize(self._rotation)
+
+    @property
+    def opacity(self) -> torch.Tensor:
+        return self._opacity
 
     @property
     def opacity_active(self) -> torch.Tensor:
@@ -103,8 +116,8 @@ class BasicGaussianModel(AbstractModel):
     def features_dc(self) -> torch.Tensor:
         return self._features_dc
 
-    def init(self, pcd_data: BasicPointCloud):
-        self._init_point_cloud_parameters(pcd_data)
+    def init(self, dataset: AbstractDataset):
+        self._init_point_cloud_parameters(dataset.ply_data)
 
         if (
             self._enable_color_transform
@@ -113,10 +126,11 @@ class BasicGaussianModel(AbstractModel):
             self._init_color_transform_model()
 
         self._initialize_learning_rate()
-        self._setup_density_control()
+        self._init_density_control()
 
-    def load(self, pcd_path: str, init_pcd_data: BasicPointCloud):
+    def load(self, pcd_path: str, dataset: AbstractDataset):
         plydata = PlyData.read(pcd_path)
+        init_pcd_data = dataset.ply_data
 
         self._fetch_point_cloud_parameters(init_pcd_data, plydata)
 
@@ -124,7 +138,7 @@ class BasicGaussianModel(AbstractModel):
             self._fetch_color_transform_model(pcd_path)
 
         self._initialize_learning_rate()
-        self._setup_density_control()
+        self._init_density_control()
 
     def save(self, pcd_path: str):
         self._save_point_cloud_parameters(pcd_path)
@@ -134,7 +148,7 @@ class BasicGaussianModel(AbstractModel):
                 pcd_path.replace(".ply", "_color_transform_matrix.pth")
             )
 
-    def iteration_start(self, iteration: int, camera: Camera):
+    def iteration_start(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         self._update_learning_rate(iteration)
         self._density_control(iteration)
         if iteration in range(
@@ -146,11 +160,11 @@ class BasicGaussianModel(AbstractModel):
         if iteration in range(
             self._prune_points_start, self._prune_points_end, self._prune_points_step
         ):
-            self._prune_points(torch.sigmoid(self._opacity) < self._prune_threshold)
+            self._filter_invisible()
 
     def render(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
         self._screenspace_points = torch.zeros_like(
-            self._xyz, dtype=self._xyz.dtype, requires_grad=True, device=self._device
+            self.xyz, dtype=self.xyz.dtype, requires_grad=True, device=self.device
         )
         self._screenspace_points.retain_grad()
         raster_settings = GRsetting(
@@ -171,10 +185,10 @@ class BasicGaussianModel(AbstractModel):
         rasterizer = GRzer(raster_settings=raster_settings)
 
         self._rendered_image, self._radii, self._rendered_depth = rasterizer(
-            means3D=self.xyz_projected,
+            means3D=self.xyz,
             means2D=self._screenspace_points,
             shs=None,
-            colors_precomp=self._features_dc,
+            colors_precomp=self.features_dc,
             opacities=self.opacity_active,
             scales=self.xyz_scales_active,
             rotations=self.rotation_active,
@@ -226,12 +240,15 @@ class BasicGaussianModel(AbstractModel):
         self._opacity = nn.Parameter(opactities.requires_grad_(True))
         self._features_dc = nn.Parameter(color.contiguous().requires_grad_(True))
 
-        self._max_bounds_init = [torch.amax(point_cloud[:, i]) for i in range(3)]
-        self._min_bounds_init = [torch.amin(point_cloud[:, i]) for i in range(3)]
+        self._init_outline_bounds(point_cloud)
 
     def _fetch_point_cloud_parameters(
         self, ply_data: PlyData, init_pcd_data: BasicPointCloud
     ):
+        def SH2RGB(sh):
+            C0 = 0.28209479177387814
+            return sh * C0 + 0.5
+
         xyz_names = ["x", "y", "z"]
         xyz_scales_names = ["scale_" + str(i) for i in range(3)]
         rotation_names = ["rot_" + str(i) for i in range(4)]
@@ -278,15 +295,14 @@ class BasicGaussianModel(AbstractModel):
         )
         self._features_dc = nn.Parameter(
             torch.tensor(
-                features_dc, dtype=torch.float, device=self._device
+                SH2RGB(features_dc), dtype=torch.float, device=self._device
             ).requires_grad_(True)
         )
 
         point_cloud = (
             torch.tensor(np.asarray(init_pcd_data.points)).float().to(self._device)
         )
-        self._max_bounds_init = [torch.amax(point_cloud[:, i]) for i in range(3)]
-        self._min_bounds_init = [torch.amin(point_cloud[:, i]) for i in range(3)]
+        self._init_outline_bounds(point_cloud)
 
     def _save_point_cloud_parameters(self, pcd_path):
         def RGB2SH(rgb):
@@ -294,12 +310,12 @@ class BasicGaussianModel(AbstractModel):
             return (rgb - 0.5) / C0
         os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
 
-        xyz = self._xyz.detach().cpu().numpy()
+        xyz = self.xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
-        f_dc = self._features_dc.detach().cpu().numpy()
-        opacity = self._opacity.detach().cpu().numpy()
-        scale = self._xyz_scales.detach().cpu().numpy()
-        rotation = self._rotation.detach().cpu().numpy()
+        f_dc = self.features_dc.detach().cpu().numpy()
+        opacity = self.opacity.detach().cpu().numpy()
+        scale = self.xyz_scales.detach().cpu().numpy()
+        rotation = self.rotation.detach().cpu().numpy()
 
         list_of_attributes = []
         list_of_attributes.extend(["x", "y", "z"])
@@ -408,7 +424,25 @@ class BasicGaussianModel(AbstractModel):
         )
 
     def _initialize_learning_rate(self):
-        l = [
+        self._optimizer = torch.optim.Adam(self._initial_param_groups, lr=0.0, eps=1e-15)
+        self._xyz_scheduler_args = get_expon_lr_func(
+            lr_init=self._learning_rate["xyz_init"] * self._cameras_extent,
+            lr_final=self._learning_rate["xyz_final"] * self._cameras_extent,
+            lr_delay_steps=self._learning_rate["xyz_delay_steps"],
+            lr_delay_mult=self._learning_rate["xyz_delay_mult"],
+            max_steps=self._learning_rate["xyz_max_steps"],
+        )
+        self._color_transformation_scheduler_args = get_expon_lr_func(
+            lr_init=self._learning_rate["color_transformation_init"],
+            lr_final=self._learning_rate["color_transformation_final"],
+            lr_delay_steps=self._learning_rate["color_transformation_delay_steps"],
+            lr_delay_mult=self._learning_rate["color_transformation_delay_mult"],
+            max_steps=self._learning_rate["color_transformation_max_steps"],
+        )
+
+    @property
+    def _initial_param_groups(self) -> list:
+        return [
             {
                 "params": [self._xyz],
                 "lr": self._learning_rate["xyz_init"] * self._cameras_extent,
@@ -435,21 +469,6 @@ class BasicGaussianModel(AbstractModel):
                 "name": "features_dc",
             },
         ]
-        self._optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self._xyz_scheduler_args = get_expon_lr_func(
-            lr_init=self._learning_rate["xyz_init"] * self._cameras_extent,
-            lr_final=self._learning_rate["xyz_final"] * self._cameras_extent,
-            lr_delay_steps=self._learning_rate["xyz_delay_steps"],
-            lr_delay_mult=self._learning_rate["xyz_delay_mult"],
-            max_steps=self._learning_rate["xyz_max_steps"],
-        )
-        self._color_transformation_scheduler_args = get_expon_lr_func(
-            lr_init=self._learning_rate["color_transformation_init"],
-            lr_final=self._learning_rate["color_transformation_final"],
-            lr_delay_steps=self._learning_rate["color_transformation_delay_steps"],
-            lr_delay_mult=self._learning_rate["color_transformation_delay_mult"],
-            max_steps=self._learning_rate["color_transformation_max_steps"],
-        )
 
     def _update_learning_rate(self, iteration: int):
         for param_group in self._optimizer.param_groups:
@@ -460,7 +479,7 @@ class BasicGaussianModel(AbstractModel):
             ):
                 param_group["lr"] = self._color_transformation_scheduler_args(iteration)
 
-    def _setup_density_control(self):
+    def _init_density_control(self):
         self._max_vspace_gradient = torch.zeros(
             (self._xyz.shape[0], 1), device=self._device
         )
@@ -468,6 +487,24 @@ class BasicGaussianModel(AbstractModel):
             (self._xyz.shape[0], 1), device=self._device
         )
         self._max_radii2D = torch.zeros((self._xyz.shape[0]), device=self._device)
+
+    def _cache_density_control(self):
+        if self._radii is None:
+            raise ValueError(
+                "Radii not computed, please set densification_start to a positive value"
+            )
+        self._max_radii2D[self._radii > 0] = torch.max(
+            self._max_radii2D[self._radii > 0], self._radii[self._radii > 0]
+        )
+        self._max_vspace_gradient[self._radii > 0] = torch.max(
+            self._max_vspace_gradient[self._radii > 0],
+            torch.norm(
+                self._screenspace_points.grad[self._radii > 0, :2],
+                dim=-1,
+                keepdim=True,
+            ),
+        )
+        self._density_control_denom[self._radii > 0] += 1
 
     def _density_control(self, iteration: int):
         if iteration in range(self._densification_start, self._densification_end):
@@ -566,24 +603,6 @@ class BasicGaussianModel(AbstractModel):
                     )
                 )
 
-    def _cache_density_control(self):
-        if self._radii is None:
-            raise ValueError(
-                    "Radii not computed, please set densification_start to a positive value"
-                )
-        self._max_radii2D[self._radii > 0] = torch.max(
-                self._max_radii2D[self._radii > 0], self._radii[self._radii > 0]
-            )
-        self._max_vspace_gradient[self._radii > 0] = torch.max(
-                self._max_vspace_gradient[self._radii > 0],
-                torch.norm(
-                    self._screenspace_points.grad[self._radii > 0, :2],
-                    dim=-1,
-                    keepdim=True,
-                ),
-            )
-        self._density_control_denom[self._radii > 0] += 1
-
     def _reset_opacity(self):
         new_opacity = inverse_sigmoid(
             0.1
@@ -591,7 +610,11 @@ class BasicGaussianModel(AbstractModel):
                 (self._xyz.shape[0], 1), dtype=torch.float, device=self._device
             )
         )
-        self._reset_param_group({"opacity": new_opacity})
+        self._opacity = self._reset_param_group({"opacity": new_opacity})["opacity"]
+
+    def _init_outline_bounds(self, point_cloud):
+        self._max_bounds_init = [torch.amax(point_cloud[:, i]) for i in range(3)]
+        self._min_bounds_init = [torch.amin(point_cloud[:, i]) for i in range(3)]
 
     def _remove_outlier(self):
         max_bounds = torch.tensor(self._max_bounds_init, device=self._device)
@@ -600,6 +623,9 @@ class BasicGaussianModel(AbstractModel):
         mask_min = torch.any(self._xyz < min_bounds, dim=1)
         mask = torch.logical_or(mask_max, mask_min)
         self._prune_points(mask)
+
+    def _filter_invisible(self):
+        self._prune_points(torch.sigmoid(self._opacity) < self._prune_threshold)
 
     def _prune_points(self, mask: torch.Tensor):
         mask = mask.squeeze()
@@ -628,10 +654,11 @@ class BasicGaussianModel(AbstractModel):
         torch.cuda.empty_cache()
 
     def _add_param_group(self, param_dict: dict):
-        for key, param_group in param_dict.items():
+        for param_group in param_dict.values():
             self._optimizer.add_param_group(param_group)
 
     def _reset_param_group(self, param_dict: dict):
+        gaussian_optimizable_tensors = {}
         for group in self._optimizer.param_groups:
             if group["name"] in param_dict:
                 reset_value = param_dict[group["name"]]
@@ -641,7 +668,8 @@ class BasicGaussianModel(AbstractModel):
                 del self._optimizer.state[group["params"][0]]
                 group["params"][0] = nn.Parameter(reset_value.requires_grad_(True))
                 self._optimizer.state[group["params"][0]] = stored_state
-                self._opacity = group["params"][0]
+                gaussian_optimizable_tensors[group["name"]] = group["params"][0]
+        return gaussian_optimizable_tensors
 
     def _prune_param_group(self, param_dict: dict) -> dict:
         gaussian_optimizable_tensors = {}

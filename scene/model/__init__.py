@@ -7,6 +7,7 @@ def parse_model(model: str) -> Type[AbstractModel]:
     MODEL_DICT = {
         "basic": ["basic_gaussian_model", "BasicGaussianModel"],
         "spacetime": ["spacetime_gaussian_model", "SpacetimeGaussianModel"],
+        "spacetime_360": ["spacetime_360", "Spacetime360Model"],
     }
     model_module = import_module("scene.model." + MODEL_DICT[model][0])
     return getattr(model_module, MODEL_DICT[model][1])

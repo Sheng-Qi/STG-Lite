@@ -84,7 +84,7 @@ class Trainer:
                     else "Namespace(sh_degree=0)"
                 )
                 file.write(txt_content)
-            self._gaussians.init(self._dataset.ply_data)
+            self._gaussians.init(self._dataset)
         else:
             active_iteration = (
                 searchForMaxIteration(os.path.join(self._model_path, "point_cloud"))
@@ -98,7 +98,7 @@ class Trainer:
                     "iteration_" + str(active_iteration),
                     "point_cloud.ply",
                 ),
-                self._dataset.ply_data,
+                self._dataset,
             )
 
     def train_model(self):
@@ -111,7 +111,7 @@ class Trainer:
                 self._dataset.train_cameras
             )
             with torch.no_grad():
-                self._gaussians.iteration_start(iteration, selected_train_camera)
+                self._gaussians.iteration_start(iteration, selected_train_camera, self._dataset)
             self._gaussians.optimizer.zero_grad(set_to_none=True)
             render_pkgs = self._gaussians.render(
                 selected_train_camera,
@@ -128,7 +128,7 @@ class Trainer:
             if iteration < self._iterations - 1:
                 self._gaussians.optimizer.step()
             with torch.no_grad():
-                self._gaussians.iteration_end(iteration, selected_train_camera)
+                self._gaussians.iteration_end(iteration, selected_train_camera, self._dataset)
             with torch.no_grad():
                 self._ema_loss_for_log = (
                     (0.4 * loss.item() + 0.6 * self._ema_loss_for_log)

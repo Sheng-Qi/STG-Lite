@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from PIL import Image
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import (
+    geom_transform_points,
     getWorld2View2,
     getProjectionMatrix,
     getProjectionMatrixCV,
@@ -142,6 +143,18 @@ class Camera:
             self._load_and_process_image()
         return self._camera_center
 
+    def check_in_image(self, xyzs: torch.Tensor) -> torch.Tensor:
+        projected = geom_transform_points(xyzs, self.full_proj_transform)  # shape: [N, 3]
+        in_bounds = (
+            (projected[:, 0] >= -1)
+            & (projected[:, 0] <= 1)
+            & (projected[:, 1] >= -1)
+            & (projected[:, 1] <= 1)
+        )
+        cam_coords = geom_transform_points(xyzs, self.world_view_transform)  # shape: [N, 3]
+        valid_depth = cam_coords[:, 2] > 0
+        return in_bounds & valid_depth
+
     def _load_and_process_image(self):
         image = Image.open(
             os.path.join(self._camera_info.image_folder, self._camera_info.image_name)
@@ -152,7 +165,7 @@ class Camera:
         ):
             raise ValueError("Image size does not match camera parameters")
         resize_image = PILtoTorch(image, resolution=self.resized_resolution)
-        
+
         if self._camera_info.mask_folder is not None:
             image_mask = Image.open(
                 os.path.join(
@@ -164,7 +177,7 @@ class Camera:
                 or self._camera_info.height != image_mask.height
             ):
                 raise ValueError("Mask size does not match camera parameters")
-            
+
             image_mask = image_mask.convert("L")
             resized_image_mask = PILtoTorch(image_mask, resolution=self.resized_resolution)
         elif resize_image.shape[0] == 4:
@@ -201,7 +214,7 @@ class Camera:
             .to(self._device)
         )
 
-        if self._camera_info.cyr != 0.0 and self._camera_info.cxr != 0.0:
+        if self._camera_info.cyr != 0.0 or self._camera_info.cxr != 0.0:
             self._projection_matrix = (
                 getProjectionMatrixCV(
                     znear=self._camera_info.near,

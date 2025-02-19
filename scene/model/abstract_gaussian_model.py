@@ -3,6 +3,7 @@ import torch
 import logging
 from abc import abstractmethod
 from utils.graphics_utils import BasicPointCloud
+from scene.dataset.abstract_dataset import AbstractDataset
 from scene.cameras import Camera
 
 
@@ -25,18 +26,18 @@ class AbstractModel:
         pass
 
     @abstractmethod
-    def init(self, pcd_data: BasicPointCloud):
+    def init(self, dataset: AbstractDataset):
         pass
 
     @abstractmethod
-    def load(self, pcd_path: str):
+    def load(self, pcd_path: str, dataset: AbstractDataset):
         pass
 
     @abstractmethod
     def save(self, pcd_path: str):
         pass
 
-    def iteration_start(self, iteration: int, camera: Camera):
+    def iteration_start(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         pass
 
     def get_regularization_loss(self, camera: Camera) -> torch.Tensor:
@@ -53,7 +54,7 @@ class AbstractModel:
             camera, GRsetting, GRzer
         )  # Default implementation. Can be overridden.
 
-    def iteration_end(self, iteration: int, camera: Camera):
+    def iteration_end(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         pass
 
     @abstractmethod
