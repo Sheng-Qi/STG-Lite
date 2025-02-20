@@ -132,7 +132,7 @@ class BasicGaussianModel(AbstractModel):
         plydata = PlyData.read(pcd_path)
         init_pcd_data = dataset.ply_data
 
-        self._fetch_point_cloud_parameters(init_pcd_data, plydata)
+        self._fetch_point_cloud_parameters(plydata, init_pcd_data)
 
         if self._enable_color_transform:
             self._fetch_color_transform_model(pcd_path)
@@ -150,7 +150,7 @@ class BasicGaussianModel(AbstractModel):
 
     def iteration_start(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         self._update_learning_rate(iteration)
-        self._density_control(iteration)
+        self._density_control(iteration, dataset)
         if iteration in range(
             self._reset_opacity_start, self._reset_opacity_end, self._reset_opacity_step
         ):
@@ -401,9 +401,8 @@ class BasicGaussianModel(AbstractModel):
                 [image, torch.ones_like(image[:1])], dim=0
             )
             return torch.einsum("ij, jwh -> iwh", matrix_param, image_stack_with_alpha)
-        raise ValueError(
-            f"Color transformation matrix not found for camera {camera_key}"
-        )
+        else:
+            return image
 
     def _calculate_color_regularization_loss(self, camera: Camera) -> torch.Tensor:
         matrix_param = self._color_transformation_matrix_dict[
@@ -511,7 +510,7 @@ class BasicGaussianModel(AbstractModel):
         )
         self._density_control_denom[self._radii > 0] += 1
 
-    def _density_control(self, iteration: int):
+    def _density_control(self, iteration: int, dataset: AbstractDataset):
         if iteration in range(self._densification_start, self._densification_end):
             self._cache_density_control()
             if (iteration + 1) in range(
@@ -585,15 +584,7 @@ class BasicGaussianModel(AbstractModel):
                 self._opacity = optimizable_tensors["opacity"]
                 self._features_dc = optimizable_tensors["features_dc"]
 
-                self._max_vspace_gradient = torch.zeros(
-                    (self._xyz.shape[0], 1), device=self._device
-                )
-                self._density_control_denom = torch.zeros(
-                    (self._xyz.shape[0], 1), device=self._device
-                )
-                self._max_radii2D = torch.zeros(
-                    (self._xyz.shape[0]), device=self._device
-                )
+                self._init_density_control()
 
                 self._prune_points(
                     torch.cat(

@@ -18,6 +18,18 @@ class TechnicolorDataset(BasicColmapDataset):
         self._frame_rate: float = dataset_params["frame_rate"]
         self._start_frame: int = dataset_params["start_frame"]
         self._duration: int = dataset_params["duration"]
+    
+    @property
+    def frame_rate(self) -> float:
+        return self._frame_rate
+    
+    @property
+    def start_frame(self) -> int:
+        return self._start_frame
+    
+    @property
+    def duration(self) -> int:
+        return self._duration
 
     def _load_ply(self):
         if self._ply_path is None:

@@ -3,13 +3,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 from typing import Type
+import logging
 import math
 from plyfile import PlyData, PlyElement
 
+from scene.dataset.abstract_dataset import AbstractDataset
 from scene.model.basic_gaussian_model import BasicGaussianModel
 from scene.cameras import Camera
 from utils.math_utils import trbfunction
-from utils.general_utils import build_rotation 
+from utils.general_utils import build_rotation
 from utils.graphics_utils import BasicPointCloud
 
 
@@ -18,6 +20,13 @@ class SpacetimeGaussianModel(BasicGaussianModel):
     def __init__(self, model_params: dict):
         super().__init__(model_params)
         self._t_scale_init: float = model_params["t_scale_init"]
+        self._split_ratio_time: float = model_params["split_ratio_time"]
+        self._enable_time_density: bool = model_params["enable_time_density"]
+        self._grad_threshold_time: float = model_params["grad_threshold_time"]
+        self._percent_dense_time: float = model_params["percent_dense_time"]
+
+        self._max_vtime_gradient: torch.Tensor = None
+        self._max_t_scale_active: torch.Tensor = None
 
         self._t: torch.Tensor = None
         self._t_scale: torch.Tensor = None
@@ -160,7 +169,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
 
         if self._enable_color_transform:
             rendered_image = self._apply_color_transformation_forward_only(
-                camera, rendered_image, radii
+                camera, rendered_image
             )
 
         end_time.record()
@@ -196,11 +205,17 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         self, ply_data: PlyData, init_pcd_data: BasicPointCloud
     ):
         super()._fetch_point_cloud_parameters(ply_data, init_pcd_data)
+
+        features_dc_names = ["f_dc_" + str(i) for i in range(3)]
         t_names = ["trbf_center"]
         t_scale_names = ["trbf_scale"]
         motion_names = ["motion_" + str(i) for i in range(9)]
         omega_names = ["omega_" + str(i) for i in range(4)]
 
+        features_dc = np.stack(
+            [np.asarray(ply_data.elements[0][name]) for name in features_dc_names],
+            axis=1,
+        )
         t = np.stack(
             [np.asarray(ply_data.elements[0][name]) for name in t_names], axis=1
         )
@@ -214,6 +229,11 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             [np.asarray(ply_data.elements[0][name]) for name in omega_names], axis=1
         )
 
+        self._features_dc = nn.Parameter(
+            torch.tensor(
+                features_dc, dtype=torch.float, device=self._device
+            ).requires_grad_(True)
+        )
         self._t = nn.Parameter(
             torch.tensor(t, dtype=torch.float, device=self._device).requires_grad_(True)
         )
@@ -306,11 +326,34 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 "params": [self._omega],
                 "lr": self._learning_rate["omega"],
                 "name": "omega",
-            }
+            },
         ]
         return super()._initial_param_groups + time_param_groups
 
-    def _density_control(self, iteration: int):
+    def _init_density_control(self):
+        super()._init_density_control()
+        if self._enable_time_density:
+            self._max_vtime_gradient = torch.zeros(
+                (self._xyz.shape[0], 1), device=self._device
+            )
+            self._max_t_scale_active = torch.zeros(
+                (self._xyz.shape[0], 1), device=self._device
+            )
+
+    def _cache_density_control(self):
+        super()._cache_density_control()
+        if self._enable_time_density:
+            self._max_vtime_gradient[self._radii > 0] = torch.max(
+                self._max_vtime_gradient[self._radii > 0],
+                self._t.grad[self._radii > 0],
+            )
+            self._max_t_scale_active[self._radii > 0] = torch.max(
+                self._max_t_scale_active[self._radii > 0],
+                torch.exp(self._t_scale[self._radii > 0]),
+            )
+
+    def _density_control(self, iteration: int, dataset: AbstractDataset):
+        # TODO: time density control with large time scale condition
         if iteration in range(self._densification_start, self._densification_end):
             self._cache_density_control()
             if (iteration + 1) in range(
@@ -333,43 +376,88 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                     space_mask, torch.sigmoid(self._opacity).squeeze() > 0.15
                 )
 
+                if self._enable_time_density:
+                    time_mask = (
+                        self._max_vtime_gradient.squeeze()
+                        * torch.pow(
+                            self._density_control_denom.squeeze()
+                            / self._densification_step,
+                            2,
+                        )
+                        * torch.sqrt(torch.sigmoid(self._opacity).squeeze())
+                        > self._grad_threshold_time
+                    )
+                    time_mask[space_mask] = False
+                else:
+                    time_mask = torch.zeros_like(space_mask, device=self._device)
+
+                selected_mask = torch.logical_or(space_mask, time_mask)
+
+                logging.debug(
+                    f"Space mask: {space_mask.sum()}, Time mask: {time_mask.sum()}"
+                )
+
                 space_split_mask = torch.logical_and(
                     space_mask,
                     torch.max(torch.exp(self._xyz_scales), dim=1).values
                     > self._percent_dense_xyz * self._cameras_extent,
                 )
-                space_split_mask_under_selection = torch.logical_and(
-                    space_split_mask, space_mask
-                )[space_mask].repeat(self._split_num)
 
-                new_xyz = self._xyz[space_mask].repeat(self._split_num, 1)
-                new_t = self._t[space_mask].repeat(self._split_num, 1)
-                new_xyz_scales = self._xyz_scales[space_mask].repeat(self._split_num, 1)
-                new_t_scale = self._t_scale[space_mask].repeat(self._split_num, 1)
-                new_rotation = self._rotation[space_mask].repeat(self._split_num, 1)
-                new_motion = self._motion[space_mask].repeat(self._split_num, 1)
-                new_omega = self._omega[space_mask].repeat(self._split_num, 1)
-                new_opacity = self._opacity[space_mask].repeat(self._split_num, 1)
-                new_features_dc = self._features_dc[space_mask].repeat(
+                space_split_mask_under_selection = torch.logical_and(
+                    space_split_mask, selected_mask
+                )[selected_mask].repeat(self._split_num)
+
+                time_split_mask = torch.logical_and(
+                    time_mask,
+                    torch.exp(self._t_scale).squeeze() > self._percent_dense_time,
+                )
+                time_split_mask_under_selection = torch.logical_and(
+                    time_split_mask, selected_mask
+                )[selected_mask].repeat(self._split_num)
+
+                new_xyz = self._xyz[selected_mask].repeat(self._split_num, 1)
+                new_t = self._t[selected_mask].repeat(self._split_num, 1)
+                new_xyz_scales = self._xyz_scales[selected_mask].repeat(
+                    self._split_num, 1
+                )
+                new_t_scale = self._t_scale[selected_mask].repeat(self._split_num, 1)
+                new_rotation = self._rotation[selected_mask].repeat(self._split_num, 1)
+                new_motion = self._motion[selected_mask].repeat(self._split_num, 1)
+                new_omega = self._omega[selected_mask].repeat(self._split_num, 1)
+                new_opacity = self._opacity[selected_mask].repeat(self._split_num, 1)
+                new_features_dc = self._features_dc[selected_mask].repeat(
                     self._split_num, 1
                 )
 
-                stds = torch.exp(self._xyz_scales[space_split_mask]).repeat(
+                stds = torch.exp(self._xyz_scales[selected_mask]).repeat(
                     self._split_num, 1
                 )
                 means = torch.zeros((stds.size(0), 3), device=self._device)
                 samples = torch.normal(mean=means, std=stds)
-                rots = build_rotation(self._rotation[space_split_mask]).repeat(
+                rots = build_rotation(self._rotation[selected_mask]).repeat(
                     self._split_num, 1, 1
                 )
                 new_xyz_random_offset = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(
                     -1
                 )
-                new_xyz[space_split_mask_under_selection] += new_xyz_random_offset
+                new_xyz += new_xyz_random_offset
+
+                new_t_offset = torch.abs(
+                    torch.randn_like(new_t) * torch.exp(new_t_scale)
+                )
+                aligned_t = (
+                    torch.floor((new_t + new_t_offset) * dataset.duration)
+                    / dataset.duration
+                )
+                new_t = torch.clamp(aligned_t, 0.0, 1.0)
 
                 new_xyz_scales[space_split_mask_under_selection] = torch.log(
                     torch.exp(new_xyz_scales[space_split_mask_under_selection])
                     * self._split_ratio
+                )
+                new_t_scale[time_split_mask_under_selection] = torch.log(
+                    torch.exp(new_t_scale[time_split_mask_under_selection])
+                    * self._split_ratio_time
                 )
 
                 param_dict = {
@@ -396,22 +484,14 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 self._opacity = optimizable_tensors["opacity"]
                 self._features_dc = optimizable_tensors["features_dc"]
 
-                self._max_vspace_gradient = torch.zeros(
-                    (self._xyz.shape[0], 1), device=self._device
-                )
-                self._density_control_denom = torch.zeros(
-                    (self._xyz.shape[0], 1), device=self._device
-                )
-                self._max_radii2D = torch.zeros(
-                    (self._xyz.shape[0]), device=self._device
-                )
+                self._init_density_control()
 
                 self._prune_points(
                     torch.cat(
                         (
-                            space_mask,
+                            selected_mask,
                             torch.zeros(
-                                self._split_num * space_mask.sum(),
+                                self._split_num * selected_mask.sum(),
                                 device=self._device,
                                 dtype=bool,
                             ),
@@ -451,4 +531,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         self._max_vspace_gradient = self._max_vspace_gradient[valid_point_mask]
         self._density_control_denom = self._density_control_denom[valid_point_mask]
         self._max_radii2D = self._max_radii2D[valid_point_mask]
+        if self._enable_time_density:
+            self._max_vtime_gradient = self._max_vtime_gradient[valid_point_mask]
+            self._max_t_scale_active = self._max_t_scale_active[valid_point_mask]
         torch.cuda.empty_cache()

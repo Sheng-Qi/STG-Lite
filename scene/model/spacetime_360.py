@@ -52,11 +52,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
         return torch.cat(
             [
                 super().xyz_scales,
-                torch.where(
-                    self._center_image_mask,
-                    self._static_xyz_scales,
-                    self._static_xyz_scales.detach(),
-                ),
+                self._static_xyz_scales.detach(),
             ],
             dim=0,
         )
@@ -126,7 +122,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
     @property
     def features_dc(self) -> torch.Tensor:
         return torch.cat(
-            [super().features_dc, self._static_features_dc],
+            [super().features_dc, self._static_features_dc.detach()],
             dim=0,
         )
 
@@ -308,11 +304,11 @@ class Spacetime360Model(SpacetimeGaussianModel):
                 opacity, dtype=torch.float, device=self._device
             ).requires_grad_(True)
         )
-
-        self._static_features_dc = torch.tensor(
-            SH2RGB(features_dc), dtype=torch.float, device=self._device
-        ).requires_grad_(False)
-
+        self._static_features_dc = nn.Parameter(
+            torch.tensor(
+                SH2RGB(features_dc), dtype=torch.float, device=self._device
+            ).requires_grad_(True)
+        )
         self._static_t = nn.Parameter(
             torch.zeros(
                 self._static_xyz.shape[0], self._t.shape[1], device=self._device
@@ -377,6 +373,11 @@ class Spacetime360Model(SpacetimeGaussianModel):
                 "lr": self._learning_rate["omega"],
                 "name": "static_omega",
             },
+            {
+                "params": [self._static_features_dc],
+                "lr": self._learning_rate["features_dc"],
+                "name": "static_features_dc",
+            }
         ]
         return super()._initial_param_groups + static_param_groups
 
@@ -401,6 +402,15 @@ class Spacetime360Model(SpacetimeGaussianModel):
             ),
         )
         self._density_control_denom[radii_dynamic > 0] += 1
+        if self._enable_time_density:
+            self._max_vtime_gradient[radii_dynamic > 0] = torch.max(
+                self._max_vtime_gradient[radii_dynamic > 0],
+                self._t.grad[radii_dynamic > 0],
+            )
+            self._max_t_scale_active[radii_dynamic > 0] = torch.max(
+                self._max_t_scale_active[radii_dynamic > 0],
+                torch.exp(self._t_scale[radii_dynamic > 0]),
+            )
 
     def _update_learning_rate(self, iteration: int):
         super()._update_learning_rate(iteration)
@@ -449,6 +459,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             "static_motion",
             "static_omega",
             "static_opacity",
+            "static_features_dc",
         ]
         param_dict = {param: valid_point_mask for param in param_list}
         gaussian_optimizable_tensors = self._prune_param_group(param_dict)
@@ -459,8 +470,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
         self._static_motion = gaussian_optimizable_tensors["static_motion"]
         self._static_omega = gaussian_optimizable_tensors["static_omega"]
         self._static_opacity = gaussian_optimizable_tensors["static_opacity"]
-
-        self._static_features_dc = self._static_features_dc[valid_point_mask]
+        self._static_features_dc = gaussian_optimizable_tensors["static_features_dc"]
 
         torch.cuda.empty_cache()
 

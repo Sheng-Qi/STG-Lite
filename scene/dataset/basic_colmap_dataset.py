@@ -43,6 +43,14 @@ class BasicColmapDataset(AbstractDataset):
         self._camera_index_set = set()
         self._test_camera_index = None
         self._ply_data = None
+    
+    @property
+    def near(self) -> float:
+        return self._near
+    
+    @property
+    def far(self) -> float:
+        return self._far
 
     @property
     def train_cameras(self) -> list[Camera]:
