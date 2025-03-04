@@ -3,6 +3,7 @@ import re
 import numpy as np
 from tqdm import tqdm
 import logging
+from pydantic import BaseModel, Field
 
 from scene.dataset.basic_colmap_dataset import BasicColmapDataset
 from scene.cameras import CameraInfo, Camera
@@ -10,33 +11,37 @@ from utils.colmap_utils import qvec2rotmat, read_points3D_binary, read_points3D_
 from utils.graphics_utils import focal2fov
 from utils.ply_utils import storePly4D, fetchPly4D
 
+class TechinicolorDatasetParams(BaseModel):
+    frame_rate: float = Field(..., gt=0)
+    start_frame: int = Field(..., ge=0)
+    duration: int = Field(..., gt=0)
 
 class TechnicolorDataset(BasicColmapDataset):
 
-    def __init__(self, dataset_params: dict):
-        super().__init__(dataset_params)
-        self._frame_rate: float = dataset_params["frame_rate"]
-        self._start_frame: int = dataset_params["start_frame"]
-        self._duration: int = dataset_params["duration"]
-    
+    def __init__(self, dataset_params: dict, context: dict):
+        time_params = dataset_params["time_params"]
+        non_time_params = {k: v for k, v in dataset_params.items() if k != "time_params"}
+        super().__init__(non_time_params, context)
+        self._time_params = TechinicolorDatasetParams.model_validate(time_params)
+
     @property
     def frame_rate(self) -> float:
-        return self._frame_rate
-    
+        return self._time_params.frame_rate
+
     @property
     def start_frame(self) -> int:
-        return self._start_frame
-    
+        return self._time_params.start_frame
+
     @property
     def duration(self) -> int:
-        return self._duration
+        return self._time_params.duration
 
     def _load_ply(self):
         if self._ply_path is None:
             self._ply_path = os.path.join(
-                self._source_path,
+                self._dataset_params.source_path,
                 "input_ply",
-                f"points3D_{self._start_frame}_{self._start_frame + self._duration}.ply",
+                f"points3D_{self._time_params.start_frame}_{self._time_params.start_frame + self._time_params.duration}.ply",
             )
             logging.info("PLY path not provided. Setting to " + self._ply_path)
             if not os.path.exists(self._ply_path):
@@ -55,10 +60,10 @@ class TechnicolorDataset(BasicColmapDataset):
     def _read_colmap_cameras(self) -> list[Camera]:
         cameras = list[Camera]()
         for time in tqdm(
-            range(self._start_frame, self._start_frame + self._duration),
+            range(self._time_params.start_frame, self._time_params.start_frame + self._time_params.duration),
             desc="Reading cameras progress",
         ):
-            subfolder_path = os.path.join(self._source_path, f"colmap_{time}")
+            subfolder_path = os.path.join(self._dataset_params.source_path, f"colmap_{time}")
             if not os.path.exists(subfolder_path):
                 raise FileNotFoundError(f"Colmap folder not found at {subfolder_path}")
 
@@ -91,6 +96,14 @@ class TechnicolorDataset(BasicColmapDataset):
                 image_folder = os.path.join(subfolder_path, "images")
                 image_name = extrinsics.name
 
+                if self._dataset_params.relative_mask_path is not None:
+                    mask_folder = os.path.join(
+                        subfolder_path,
+                        self._dataset_params.relative_mask_path,
+                    )
+                else:
+                    mask_folder = None
+
                 camera_info = CameraInfo(
                     width=width,
                     height=height,
@@ -101,24 +114,25 @@ class TechnicolorDataset(BasicColmapDataset):
                     R=R,
                     T=T,
                     image_folder=image_folder,
-                    mask_folder=self._mask_path,
+                    mask_folder=mask_folder,
                     image_name=image_name,
                     camera_id=self._get_camera_index(image_name),
-                    near=self._near,
-                    far=self._far,
+                    near=self._dataset_params.near,
+                    far=self._dataset_params.far,
                     trans=np.array([0, 0, 0]),
                     scale=1.0,
                     timestamp=time,
-                    timestamp_ratio=(time - self._start_frame) / self._duration,
+                    timestamp_ratio=(time - self._time_params.start_frame)
+                    / self._time_params.duration,
                 )
                 cameras.append(
                     Camera(
                         camera_info,
-                        device=self._device,
-                        data_device=self._data_device,
-                        int8_mode=self._int8_mode,
-                        resolution_scale=self._resolution_scale,
-                        lazy_load=self._lazy_load,
+                        device=self._context.device,
+                        data_device=self._dataset_params.data_device,
+                        int8_mode=self._dataset_params.int8_mode,
+                        resolution_scale=self._dataset_params.resolution_scale,
+                        lazy_load=self._dataset_params.lazy_load,
                     )
                 )
 
@@ -132,22 +146,37 @@ class TechnicolorDataset(BasicColmapDataset):
         totalrgb = list()
         totaltime = list()
 
-        for time in range(self._start_frame, self._start_frame + self._duration):
-            current_time_bin_path = os.path.join(
-                self._source_path, f"colmap_{time}", "sparse", "0", "points3D.bin"
-            )
-            current_time_txt_path = os.path.join(
-                self._source_path, f"colmap_{time}", "sparse", "0", "points3D.txt"
-            )
-            if os.path.exists(current_time_bin_path):
-                xyz, rgb, _ = read_points3D_binary(current_time_bin_path)
+        for time in range(self._time_params.start_frame, self._time_params.start_frame + self._time_params.duration):
+            paths = [
+                os.path.join(
+                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "0", "points3D.bin"
+                ),
+                os.path.join(
+                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "0", "points3D.txt"
+                ),
+                os.path.join(
+                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "points3D.bin"
+                ),
+                os.path.join(
+                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "points3D.txt"
+                ),
+            ]
+            for path in paths:
+                if os.path.exists(path):
+                    break
             else:
-                xyz, rgb, _ = read_points3D_text(current_time_txt_path)
+                raise FileNotFoundError(
+                    f"Could not find points3D file for time {time} at any of the following paths: {paths}"
+                )
+            if path.endswith(".bin"):
+                xyz, rgb, _ = read_points3D_binary(path)
+            else:
+                xyz, rgb, _ = read_points3D_text(path)
 
             totalxyz.append(xyz)
             totalrgb.append(rgb)
             totaltime.append(
-                np.ones((xyz.shape[0], 1)) * (time - self._start_frame) / self._duration
+                np.ones((xyz.shape[0], 1)) * (time - self._time_params.start_frame) / self._time_params.duration
             )
         xyz = np.concatenate(totalxyz, axis=0)
         rgb = np.concatenate(totalrgb, axis=0)

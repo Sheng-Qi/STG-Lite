@@ -1,8 +1,11 @@
 import os
 import re
 import numpy as np
+import torch
 from tqdm import tqdm
 import logging
+from typing import Optional
+from pydantic import BaseModel, field_validator, Field
 
 from scene.dataset.abstract_dataset import AbstractDataset
 from scene.cameras import CameraInfo, Camera
@@ -21,36 +24,43 @@ from utils.graphics_utils import focal2fov, getWorld2View2, BasicPointCloud
 from utils.ply_utils import storePly3D, fetchPly3D
 
 
+class BasicColmapDatasetParams(BaseModel):
+    source_path: str
+    relative_mask_path: Optional[str] = None
+    resolution_scale: float = 2.0
+    is_eval: bool = False
+    train_test_split_seed: int = 0
+    near: float = 0.1
+    far: float = 100.0
+    lazy_load: bool = True
+    ply_path: Optional[str] = None
+    data_device: str = "cpu"
+    int8_mode: bool = True
+
+
+class BasicColmapDatasetContext(BaseModel):
+    device: str
+
+
 class BasicColmapDataset(AbstractDataset):
 
-    def __init__(self, dataset_params: dict):
-        super().__init__(dataset_params)
-        self._source_path: str = dataset_params["source_path"]
-        self._mask_path: str = dataset_params["mask_path"]
-        self._resolution_scale: float = dataset_params["resolution_scale"]
-        self._is_eval: bool = dataset_params["is_eval"]
-        self._train_test_split_seed: int = dataset_params["train_test_split_seed"]
-        self._near: float = dataset_params["near"]
-        self._far: float = dataset_params["far"]
-        self._lazy_load: bool = dataset_params["lazy_load"]
-        self._ply_path: str = dataset_params["ply_path"]
-        self._device: str = dataset_params["device"]
-        self._data_device: str = dataset_params["data_device"]
-        self._int8_mode: bool = dataset_params["int8_mode"]
-
+    def __init__(self, dataset_params: dict, context: dict):
+        self._dataset_params = BasicColmapDatasetParams.model_validate(dataset_params)
+        self._context = BasicColmapDatasetContext(**context)
         self._train_cameras = None
         self._test_cameras = None
         self._camera_index_set = set()
         self._test_camera_index = None
+        self._ply_path = self._dataset_params.ply_path
         self._ply_data = None
-    
+
     @property
     def near(self) -> float:
-        return self._near
-    
+        return self._dataset_params.near
+
     @property
     def far(self) -> float:
-        return self._far
+        return self._dataset_params.far
 
     @property
     def train_cameras(self) -> list[Camera]:
@@ -109,16 +119,17 @@ class BasicColmapDataset(AbstractDataset):
 
     def _load_cameras(self):
         cameras = self._read_colmap_cameras()
-        if self._is_eval:
+        if self._dataset_params.is_eval:
             self._train_cameras, self._test_cameras = self._train_test_split(cameras)
         else:
             self._train_cameras = cameras
             self._test_cameras = list[Camera]()
 
     def _load_ply(self):
+
         if self._ply_path is None:
             self._ply_path = os.path.join(
-                self._source_path,
+                self._dataset_params.source_path,
                 "input_ply",
                 f"points3D.ply",
             )
@@ -138,12 +149,14 @@ class BasicColmapDataset(AbstractDataset):
 
     def _read_colmap_cameras(self) -> list[Camera]:
         cameras = list[Camera]()
-        if not os.path.exists(self._source_path):
-            raise FileNotFoundError(f"Colmap folder not found at {self._source_path}")
+        if not os.path.exists(self._dataset_params.source_path):
+            raise FileNotFoundError(
+                f"Colmap folder not found at {self._dataset_params.source_path}"
+            )
 
         cam_extrinsics, cam_intrinsics = self._find_and_read_colmap_files(
-            self._source_path
-        )        
+            self._dataset_params.source_path
+        )
 
         for extrinsics in tqdm(
             cam_extrinsics.values(),
@@ -170,8 +183,16 @@ class BasicColmapDataset(AbstractDataset):
 
             R = np.transpose(qvec2rotmat(extrinsics.qvec))
             T = np.array(extrinsics.tvec)
-            image_folder = os.path.join(self._source_path, "images")
+            image_folder = os.path.join(self._dataset_params.source_path, "images")
             image_name = extrinsics.name
+
+            if self._dataset_params.relative_mask_path is not None:
+                mask_folder = os.path.join(
+                    self._dataset_params.source_path,
+                    self._dataset_params.relative_mask_path,
+                )
+            else:
+                mask_folder = None
 
             camera_info = CameraInfo(
                 width=width,
@@ -183,11 +204,11 @@ class BasicColmapDataset(AbstractDataset):
                 R=R,
                 T=T,
                 image_folder=image_folder,
-                mask_folder=self._mask_path,
+                mask_folder=mask_folder,
                 image_name=image_name,
                 camera_id=self._get_camera_index(image_name),
-                near=self._near,
-                far=self._far,
+                near=self._dataset_params.near,
+                far=self._dataset_params.far,
                 trans=np.array([0, 0, 0]),
                 scale=1.0,
                 timestamp=None,
@@ -196,11 +217,11 @@ class BasicColmapDataset(AbstractDataset):
             cameras.append(
                 Camera(
                     camera_info,
-                    device=self._device,
-                    data_device=self._data_device,
-                    int8_mode=self._int8_mode,
-                    resolution_scale=self._resolution_scale,
-                    lazy_load=self._lazy_load,
+                    device=self._context.device,
+                    data_device=self._dataset_params.data_device,
+                    int8_mode=self._dataset_params.int8_mode,
+                    resolution_scale=self._dataset_params.resolution_scale,
+                    lazy_load=self._dataset_params.lazy_load,
                 )
             )
 
@@ -212,7 +233,7 @@ class BasicColmapDataset(AbstractDataset):
         self, cameras: list[Camera]
     ) -> tuple[list[Camera], list[Camera]]:
         camera_indices = list(self._camera_index_set)
-        np.random.seed(self._train_test_split_seed)
+        np.random.seed(self._dataset_params.train_test_split_seed)
         np.random.shuffle(camera_indices)
         self._test_camera_index = camera_indices[0]
         logging.info(f"Test camera index: {self._test_camera_index}")
@@ -252,19 +273,22 @@ class BasicColmapDataset(AbstractDataset):
         raise FileNotFoundError(f"Colmap files not found at {colmap_data_path}")
 
     def _get_camera_index(self, image_name: str) -> int:
-        match = re.search(r"cam(\d+)", image_name)
-        if match:
-            return int(match.group(1))
-        else:
-            raise ValueError(f"No camera index found in {image_name}")
+        matches = [
+            re.search(r"cam(\d+)[/_.]", image_name),
+            re.search(r"(\d+)/(\d+)", image_name),
+        ]
+        for match in matches:
+            if match:
+                return int(match.group(1))
+        raise ValueError(f"No camera index found in {image_name}")
 
     def _create_ply_from_colmap(self):
-        paths = [
-            "0/points3D.bin", "0/points3D.txt", "points3D.bin", "points3D.txt"
-        ]
+        paths = ["0/points3D.bin", "0/points3D.txt", "points3D.bin", "points3D.txt"]
 
         for points3D_file in paths:
-            points3D_path = os.path.join(self._source_path, "sparse", points3D_file)
+            points3D_path = os.path.join(
+                self._dataset_params.source_path, "sparse", points3D_file
+            )
             if os.path.exists(points3D_path):
                 if points3D_file.endswith(".bin"):
                     xyz, rgb, _ = read_points3D_binary(points3D_path)
@@ -272,4 +296,6 @@ class BasicColmapDataset(AbstractDataset):
                     xyz, rgb, _ = read_points3D_text(points3D_path)
                 storePly3D(self._ply_path, xyz, rgb)
                 return
-        raise FileNotFoundError(f"Colmap points3D files not found at {self._source_path}")
+        raise FileNotFoundError(
+            f"Colmap points3D files not found at {self._dataset_params.source_path}"
+        )

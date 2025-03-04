@@ -1,255 +1,221 @@
-import numpy as np
 import torch
-import torch.nn as nn
-from plyfile import PlyData
+import numpy as np
+from typing import Type
+import math
+import os
+from plyfile import PlyData, PlyElement
+from pydantic import BaseModel
 
 from scene.model.spacetime_gaussian_model import SpacetimeGaussianModel
-from utils.graphics_utils import BasicPointCloud
-from utils.general_utils import inverse_sigmoid
+from scene.cameras import Camera
+from utils.general_utils import SH2RGB
+
+
+class Spacetime360ModelConfig(BaseModel):
+    ply_path: str
 
 
 class Spacetime360Model(SpacetimeGaussianModel):
-    def __init__(self, config):
-        super().__init__(config)
 
-        self._static_ply_path: str = config["static_ply_path"]
-        self._border_image_threshold: int = config["border_image_threshold"]
-        self._enable_simplified_border_method: bool = config[
-            "enable_simplified_border_method"
-        ]
-
-        self._static_xyz: torch.Tensor = None
-        self._static_xyz_scales: torch.Tensor = None
-        self._static_rotation: torch.Tensor = None
-        self._static_opacity: torch.Tensor = None
-        self._static_features_dc: torch.Tensor = None
-        self._static_t: torch.Tensor = None
-        self._STATIC_T_SCALE = 1e5
-        self._static_motion: torch.Tensor = None
-        self._static_omega: torch.Tensor = None
-
-        self._static_radii: torch.Tensor = None
-        self._static_screenspace_points: torch.Tensor = None
-
-        self._train_cameras = None
-        self._camset = None
-        self._cached_count_in_cameras = None
-
-    @property
-    def xyz(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().xyz,
-                torch.where(
-                    self._center_image_mask, self._static_xyz, self._static_xyz.detach()
-                ),
-            ],
-            dim=0,
+    def __init__(self, params: dict, context: dict):
+        static_params = params["static"]
+        non_static_params = {k: v for k, v in params.items() if k != "static"}
+        super().__init__(non_static_params, context)
+        self._static_params = Spacetime360ModelConfig.model_validate(
+            static_params, context=context
         )
 
+        self.__static_xyz: torch.Tensor = None
+        self.__static_xyz_scales: torch.Tensor = None
+        self.__static_rotation: torch.Tensor = None
+        self.__static_opacity: torch.Tensor = None
+        self.__static_features_dc: torch.Tensor = None
+        self.__DEFAULT_STATIC_T: int = 0
+        self.__DEFAULT_STATIC_T_SCALE: int = 1e6
+        self.__DEFAULT_STATIC_MOTION: int = 0
+        self.__DEFAULT_STATIC_OMEGA: int = 0
+
     @property
-    def xyz_scales(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().xyz_scales,
-                self._static_xyz_scales.detach(),
-            ],
-            dim=0,
+    def static_xyz(self):
+        return self.__static_xyz
+
+    @property
+    def static_xyz_scales(self):
+        return self.__static_xyz_scales
+
+    @property
+    def static_xyz_scales_activated(self):
+        return torch.exp(self.__static_xyz_scales)
+
+    @property
+    def static_rotation(self):
+        return self.__static_rotation
+
+    @property
+    def static_rotation_activated(self):
+        return torch.nn.functional.normalize(self.__static_rotation)
+
+    @property
+    def static_opacity(self):
+        return self.__static_opacity
+
+    @property
+    def static_opacity_activated(self):
+        return torch.sigmoid(self.__static_opacity)
+
+    @property
+    def static_features_dc(self):
+        return self.__static_features_dc
+
+    def render(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
+        self._vspace_points = torch.zeros_like(
+            self.xyz, dtype=self.xyz.dtype, requires_grad=True, device=self.device
+        )
+        self._vspace_points.retain_grad()
+        self._static_vspce_points = torch.zeros_like(
+            self.__static_xyz, dtype=self.__static_xyz.dtype, requires_grad=True, device=self.device
         )
 
-    @property
-    def xyz_scales_active(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().xyz_scales_active,
-                torch.where(
-                    self._center_image_mask,
-                    torch.exp(self._static_xyz_scales),
-                    torch.exp(self._static_xyz_scales).detach(),
-                ),
-            ],
-            dim=0,
+        raster_settings = GRsetting(
+            image_height=int(camera.resized_height),
+            image_width=int(camera.resized_width),
+            tanfovx=math.tan(camera.camera_info.FovX * 0.5),
+            tanfovy=math.tan(camera.camera_info.FovY * 0.5),
+            bg=self._bg_color,
+            scale_modifier=1.0,
+            viewmatrix=camera.world_view_transform,
+            projmatrix=camera.full_proj_transform,
+            sh_degree=0,
+            campos=camera.camera_center,
+            prefiltered=False,
         )
+        rasterizer = GRzer(raster_settings=raster_settings)
 
-    @property
-    def rotation(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().rotation,
-                torch.where(
-                    self._center_image_mask,
-                    self._static_rotation,
-                    self._static_rotation.detach(),
-                ),
-            ],
-            dim=0,
-        )
-
-    @property
-    def rotation_active(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().rotation_active,
-                torch.where(
-                    self._center_image_mask,
-                    torch.nn.functional.normalize(self._static_rotation),
-                    torch.nn.functional.normalize(self._static_rotation).detach(),
-                ),
-            ],
-            dim=0,
-        )
-
-    @property
-    def opacity(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().opacity,
-                self._static_opacity,
-            ],
-            dim=0,
-        )
-
-    @property
-    def opacity_active(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().opacity_active,
-                torch.sigmoid(self._static_opacity),
-            ],
-            dim=0,
-        )
-
-    @property
-    def features_dc(self) -> torch.Tensor:
-        return torch.cat(
-            [super().features_dc, self._static_features_dc.detach()],
-            dim=0,
-        )
-
-    @property
-    def t(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().t,
-                torch.where(
-                    self._center_image_mask,
-                    self._static_t,
-                    self._static_t.detach(),
-                ),
-            ],
-            dim=0,
-        )
-
-    @property
-    def t_scale(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().t_scale,
-                torch.full_like(
-                    self._static_t, torch.exp(torch.tensor(self._STATIC_T_SCALE))
-                ),
-            ],
-            dim=0,
-        )
-
-    @property
-    def t_scale_active(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().t_scale_active,
-                torch.full_like(
-                    self._static_t, torch.exp(torch.tensor(self._STATIC_T_SCALE))
-                ),
-            ],
-            dim=0,
-        )
-
-    @property
-    def motion(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().motion,
-                torch.where(
-                    self._center_image_mask,
-                    self._static_motion,
-                    self._static_motion.detach(),
-                ),
-            ],
-            dim=0,
-        )
-
-    @property
-    def omega(self) -> torch.Tensor:
-        return torch.cat(
-            [
-                super().omega,
-                torch.where(
-                    self._center_image_mask,
-                    self._static_omega,
-                    self._static_omega.detach(),
-                ),
-            ],
-            dim=0,
-        )
-
-    @property
-    def _count_in_cameras(self) -> torch.Tensor:
-        if self._cached_count_in_cameras is None:
-            self._update_count_in_cameras()
-        return self._cached_count_in_cameras
-
-    @property
-    def _center_image_mask(self) -> torch.Tensor:
-        return (self._count_in_cameras > self._border_image_threshold).unsqueeze(1)
-
-    def init(self, dataset):
-        super().init(dataset)
-        self._train_cameras = dataset.train_cameras
-        self._camset = {
-            camera.camera_info.camera_id: camera for camera in self._train_cameras
-        }
-
-    def load(self, pcd_path, dataset):
-        super().load(pcd_path, dataset)
-        self._train_cameras = dataset.train_cameras
-        self._camset = {
-            camera.camera_info.camera_id: camera for camera in self._train_cameras
-        }
-
-    def iteration_start(self, iteration, camera, dataset):
-        super().iteration_start(iteration, camera, dataset)
-        self._update_count_in_cameras()
-
-    def _update_count_in_cameras(self):
-        self._cached_count_in_cameras = torch.zeros_like(
-            self._static_xyz[:, 0], device=self._device
-        )
-        if self._enable_simplified_border_method:
-            for camera in self._camset.values():
-                self._cached_count_in_cameras += camera.check_in_image(self._static_xyz)
-            self._cached_count_in_cameras = (
-                self._cached_count_in_cameras
-                / len(self._camset)
-                * len(self._train_cameras)
+        delta_t = (
+            torch.full(
+                (self.xyz.shape[0], 1),
+                camera.camera_info.timestamp_ratio,
+                dtype=self.xyz.dtype,
+                requires_grad=False,
+                device=self.device,
             )
-        else:
-            for camera in self._train_cameras:
-                self._cached_count_in_cameras += camera.check_in_image(self._static_xyz)
+            - self.t
+        )
 
-    def _init_point_cloud_parameters(self, pcd_data: BasicPointCloud):
-        super()._init_point_cloud_parameters(pcd_data)
-        self._init_static_parameters(pcd_data)
+        self._rendered_image, self._vspace_radii, self._rendered_depth = rasterizer(
+            means3D=torch.cat((self.xyz_projected(delta_t), self.__static_xyz), dim=0),
+            means2D=torch.cat((self._vspace_points, self._static_vspce_points), dim=0),
+            shs=None,
+            colors_precomp=torch.cat((self.features_dc, self.__static_features_dc), dim=0),
+            opacities=torch.cat((self.opacity_activated_projected(delta_t), self.static_opacity_activated), dim=0),
+            scales=torch.cat((self.xyz_scales_activated, self.static_xyz_scales_activated), dim=0),
+            rotations=torch.cat((self.rotation_activated_projected(delta_t), self.static_rotation_activated), dim=0),
+            cov3D_precomp=None,
+        )
 
-    def _fetch_point_cloud_parameters(self, ply_data, init_pcd_data):
-        super()._fetch_point_cloud_parameters(ply_data, init_pcd_data)
-        self._init_static_parameters(init_pcd_data)
+        if self._basic_params.color_transform.enable:
+            self._rendered_image = self._apply_color_transformation(
+                camera, self._rendered_image
+            )
+        
+        self._vspace_radii = self._vspace_radii[: self.xyz.shape[0]]
 
-    def _init_static_parameters(self, dynamic_pcd_data: BasicPointCloud):
-        def SH2RGB(sh):
-            C0 = 0.28209479177387814
-            return sh * C0 + 0.5
+        return {
+            "rendered_image": self._rendered_image,
+            "depth": self._rendered_depth,
+        }
 
-        static_ply_data = PlyData.read(self._static_ply_path)
+    def render_forward_only(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
+        screenspace_points = torch.zeros(
+            (self.xyz.shape[0] + self.static_xyz.shape[0], self.xyz.shape[1]),
+            dtype=self.xyz.dtype,
+            requires_grad=True,
+            device=self.device,
+        )
+        start_time = torch.cuda.Event(enable_timing=True)
+        end_time = torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize()
+        start_time.record()
+        raster_settings = GRsetting(
+            image_height=int(camera.resized_height),
+            image_width=int(camera.resized_width),
+            tanfovx=math.tan(camera.camera_info.FovX * 0.5),
+            tanfovy=math.tan(camera.camera_info.FovY * 0.5),
+            bg=self._bg_color,
+            scale_modifier=1.0,
+            viewmatrix=camera.world_view_transform,
+            projmatrix=camera.full_proj_transform,
+            sh_degree=0,
+            campos=camera.camera_center,
+            prefiltered=False,
+            debug=False,
+        )
+        rasterizer = GRzer(raster_settings=raster_settings)
+        delta_t = (
+            torch.full(
+                (self.xyz.shape[0], 1),
+                camera.camera_info.timestamp_ratio,
+                dtype=self.xyz.dtype,
+                requires_grad=False,
+                device=self.device,
+            )
+            - self.t
+        )
+        rendered_image, radii = rasterizer(
+            timestamp=camera.camera_info.timestamp_ratio,
+            trbfcenter=torch.cat((self.t, torch.full((self.static_xyz.shape[0], self.t.shape[1]), self.__DEFAULT_STATIC_T, device=self.device)), dim=0),
+            trbfscale=torch.cat((self.t_scale, torch.full((self.static_xyz.shape[0], self.t_scale.shape[1]), self.__DEFAULT_STATIC_T_SCALE, device=self.device)), dim=0),
+            motion=torch.cat((self.motion_full_degree, torch.full((self.static_xyz.shape[0], self.motion_full_degree.shape[1]), self.__DEFAULT_STATIC_MOTION, device=self.device)), dim=0),
+            means3D=torch.cat((self.xyz, self.static_xyz), dim=0),
+            means2D=screenspace_points,
+            shs=None,
+            colors_precomp=torch.cat((self.features_dc, self.static_features_dc), dim=0),
+            opacities=torch.cat((self.opacity_activated_projected(delta_t), self.static_opacity_activated), dim=0),
+            scales=torch.cat((self.xyz_scales_activated, self.static_xyz_scales_activated), dim=0),
+            rotations=torch.cat((self.rotation_activated_projected(delta_t), self.static_rotation_activated), dim=0),
+            cov3D_precomp=None,
+        )
+
+        if self._basic_params.color_transform.enable:
+            rendered_image = self._apply_color_transformation_forward_only(
+                camera, rendered_image
+            )
+
+        end_time.record()
+        torch.cuda.synchronize()
+        duration = start_time.elapsed_time(end_time)
+        return {
+            "rendered_image": rendered_image,
+            "radii": radii,
+            "duration": duration,
+        }
+
+    def _set_static_gaussian_attributes(self, param_dict: dict):
+        assert all(
+            key in param_dict for key in ["xyz", "xyz_scales", "rotation", "opacity", "features_dc"]
+        )
+        assert all(
+            param_dict["xyz"].shape[0] == param_dict[key].shape[0]
+            for key in ["xyz_scales", "rotation", "opacity", "features_dc"]
+        )
+        self.__static_xyz = param_dict["xyz"]
+        self.__static_xyz_scales = param_dict["xyz_scales"]
+        self.__static_rotation = param_dict["rotation"]
+        self.__static_opacity = param_dict["opacity"]
+        self.__static_features_dc = param_dict["features_dc"]
+
+    def _init_point_cloud_parameters(self, pcd_data):
+        self._load_static_point_cloud()
+        return super()._init_point_cloud_parameters(pcd_data)
+
+    def _fetch_point_cloud_parameters(self, ply_data, is_sh=False):
+        self._load_static_point_cloud()
+        return super()._fetch_point_cloud_parameters(ply_data, is_sh)
+
+    def _load_static_point_cloud(self, is_sh: bool = True):
+
+        static_ply_path = self._static_params.ply_path
+        ply_data = PlyData.read(static_ply_path)
 
         xyz_names = ["x", "y", "z"]
         xyz_scales_names = ["scale_" + str(i) for i in range(3)]
@@ -258,221 +224,103 @@ class Spacetime360Model(SpacetimeGaussianModel):
         features_dc_names = ["f_dc_" + str(i) for i in range(3)]
 
         xyz = np.stack(
-            [np.asarray(static_ply_data.elements[0][name]) for name in xyz_names],
-            axis=1,
+            [np.asarray(ply_data.elements[0][name]) for name in xyz_names], axis=1
         )
         xyz_scales = np.stack(
-            [
-                np.asarray(static_ply_data.elements[0][name])
-                for name in xyz_scales_names
-            ],
+            [np.asarray(ply_data.elements[0][name]) for name in xyz_scales_names],
             axis=1,
         )
         rotation = np.stack(
-            [np.asarray(static_ply_data.elements[0][name]) for name in rotation_names],
-            axis=1,
+            [np.asarray(ply_data.elements[0][name]) for name in rotation_names], axis=1
         )
         opacity = np.stack(
-            [np.asarray(static_ply_data.elements[0][name]) for name in opacity_names],
-            axis=1,
+            [np.asarray(ply_data.elements[0][name]) for name in opacity_names], axis=1
         )
         features_dc = np.stack(
-            [
-                np.asarray(static_ply_data.elements[0][name])
-                for name in features_dc_names
-            ],
+            [np.asarray(ply_data.elements[0][name]) for name in features_dc_names],
             axis=1,
         )
 
-        self._static_xyz = nn.Parameter(
-            torch.tensor(xyz, dtype=torch.float, device=self._device).requires_grad_(
-                True
-            )
-        )
-        self._static_xyz_scales = nn.Parameter(
-            torch.tensor(
-                xyz_scales, dtype=torch.float, device=self._device
-            ).requires_grad_(True)
-        )
-        self._static_rotation = nn.Parameter(
-            torch.tensor(
-                rotation, dtype=torch.float, device=self._device
-            ).requires_grad_(True)
-        )
-        self._static_opacity = nn.Parameter(
-            torch.tensor(
-                opacity, dtype=torch.float, device=self._device
-            ).requires_grad_(True)
-        )
-        self._static_features_dc = nn.Parameter(
-            torch.tensor(
-                SH2RGB(features_dc), dtype=torch.float, device=self._device
-            ).requires_grad_(True)
-        )
-        self._static_t = nn.Parameter(
-            torch.zeros(
-                self._static_xyz.shape[0], self._t.shape[1], device=self._device
-            ).requires_grad_(True)
-        )
-        self._static_motion = nn.Parameter(
-            torch.zeros(
-                self._static_xyz.shape[0], self._motion.shape[1], device=self._device
-            ).requires_grad_(True)
-        )
-        self._static_omega = nn.Parameter(
-            torch.zeros(
-                self._static_xyz.shape[0], self._omega.shape[1], device=self._device
-            ).requires_grad_(True)
-        )
-
-        point_cloud_dynamic = (
-            torch.tensor(np.asarray(dynamic_pcd_data.points)).float().to(self._device)
-        )
-        self._init_outline_bounds(
-            torch.cat([point_cloud_dynamic, self._static_xyz], dim=0)
-        )  # reinit outline bounds
-
-    @property
-    def _initial_param_groups(self) -> list:
-        static_param_groups = [
-            {
-                "params": [self._static_xyz],
-                "lr": self._learning_rate["xyz_init"] * self._cameras_extent,
-                "name": "static_xyz",
-            },
-            {
-                "params": [self._static_xyz_scales],
-                "lr": self._learning_rate["xyz_scales"],
-                "name": "static_xyz_scales",
-            },
-            {
-                "params": [self._static_rotation],
-                "lr": self._learning_rate["rotation"],
-                "name": "static_rotation",
-            },
-            {
-                "params": [self._static_opacity],
-                "lr": self._learning_rate["opacity"],
-                "name": "static_opacity",
-            },
-            {
-                "params": [self._static_t],
-                "lr": self._learning_rate["t"],
-                "name": "static_t",
-            },
-            {
-                "params": [self._static_motion],
-                "lr": self._learning_rate["xyz_init"]
-                * self._cameras_extent
-                * 0.5
-                * self._learning_rate["motion"],
-                "name": "static_motion",
-            },
-            {
-                "params": [self._static_omega],
-                "lr": self._learning_rate["omega"],
-                "name": "static_omega",
-            },
-            {
-                "params": [self._static_features_dc],
-                "lr": self._learning_rate["features_dc"],
-                "name": "static_features_dc",
-            }
-        ]
-        return super()._initial_param_groups + static_param_groups
-
-    def _cache_density_control(self):
-        if self._radii is None:
-            raise ValueError(
-                "Radii not computed, please set densification_start to a positive value"
-            )
-        radii_dynamic = self._radii[: self._xyz.shape[0]]
-        self._max_radii2D[radii_dynamic > 0] = torch.max(
-            self._max_radii2D[radii_dynamic > 0],
-            radii_dynamic[radii_dynamic > 0],
-        )
-        self._max_vspace_gradient[radii_dynamic > 0] = torch.max(
-            self._max_vspace_gradient[radii_dynamic > 0],
-            torch.norm(
-                self._screenspace_points.grad[: self._xyz.shape[0]][
-                    radii_dynamic > 0, :2
-                ],
-                dim=-1,
-                keepdim=True,
+        param_dict = {
+            "xyz": torch.tensor(xyz, dtype=torch.float, device=self.device),
+            "xyz_scales": torch.tensor(
+                xyz_scales, dtype=torch.float, device=self.device
             ),
+            "rotation": torch.tensor(
+                rotation, dtype=torch.float, device=self.device
+            ),
+            "opacity": torch.tensor(
+                opacity, dtype=torch.float, device=self.device
+            ),
+            "features_dc": torch.tensor(
+                SH2RGB(features_dc) if is_sh else features_dc,
+                dtype=torch.float,
+                device=self.device,
+            ),
+        }
+        self._set_static_gaussian_attributes(param_dict)
+
+    def _save_point_cloud_parameters(self, pcd_path):
+        os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
+        xyz = torch.cat(
+            [self.xyz.cpu().detach(), self.static_xyz.cpu().detach()]
+        ).numpy()
+        trbf_center = torch.cat(
+            [self.t.cpu().detach(), torch.full((self.static_xyz.shape[0], self.t.shape[1]), self.__DEFAULT_STATIC_T).cpu().detach()]
+        ).numpy()
+        trbf_scale = torch.cat(
+            [self.t_scale.cpu().detach(), torch.full((self.static_xyz.shape[0], self.t_scale.shape[1]), self.__DEFAULT_STATIC_T_SCALE).cpu().detach()]
+        ).numpy()
+        normals = np.zeros_like(xyz)
+        motion_full_degree = torch.cat(
+            [self.motion_full_degree.cpu().detach(), torch.full((self.static_xyz.shape[0], self.motion_full_degree.shape[1]), self.__DEFAULT_STATIC_MOTION).cpu().detach()]
+        ).numpy()
+        f_dc = torch.cat(
+            [self.features_dc.cpu().detach(), self.static_features_dc.cpu().detach()]
+        ).numpy()
+        opacity = torch.cat(
+            [self.opacity.cpu().detach(), self.static_opacity.cpu().detach()]
+        ).numpy()
+        scale = torch.cat(
+            [self.xyz_scales.cpu().detach(), self.static_xyz_scales.cpu().detach()]
+        ).numpy()
+        rotation = torch.cat(
+            [self.rotation.cpu().detach(), self.static_rotation.cpu().detach()]
+        ).numpy()
+        omega_full_degree = torch.cat(
+            [self.omega_full_degree.cpu().detach(), torch.full((self.static_xyz.shape[0], self.omega_full_degree.shape[1]), self.__DEFAULT_STATIC_OMEGA).cpu().detach()]
+        ).numpy()
+
+        list_of_attributes = []
+        list_of_attributes.extend(["x", "y", "z"])
+        list_of_attributes.extend(["trbf_center"])
+        list_of_attributes.extend(["trbf_scale"])
+        list_of_attributes.extend(["nx", "ny", "nz"])
+        list_of_attributes.extend(["motion_" + str(i) for i in range(9)])
+        list_of_attributes.extend(["f_dc_" + str(i) for i in range(3)])
+        list_of_attributes.extend(["opacity"])
+        list_of_attributes.extend(["scale_" + str(i) for i in range(3)])
+        list_of_attributes.extend(["rot_" + str(i) for i in range(4)])
+        list_of_attributes.extend(["omega_" + str(i) for i in range(4)])
+
+        dtype_full = [(attribute, "f4") for attribute in list_of_attributes]
+
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate(
+            (
+                xyz,
+                trbf_center,
+                trbf_scale,
+                normals,
+                motion_full_degree,
+                f_dc,
+                opacity,
+                scale,
+                rotation,
+                omega_full_degree,
+            ),
+            axis=1,
         )
-        self._density_control_denom[radii_dynamic > 0] += 1
-        if self._enable_time_density:
-            self._max_vtime_gradient[radii_dynamic > 0] = torch.max(
-                self._max_vtime_gradient[radii_dynamic > 0],
-                self._t.grad[radii_dynamic > 0],
-            )
-            self._max_t_scale_active[radii_dynamic > 0] = torch.max(
-                self._max_t_scale_active[radii_dynamic > 0],
-                torch.exp(self._t_scale[radii_dynamic > 0]),
-            )
-
-    def _update_learning_rate(self, iteration: int):
-        super()._update_learning_rate(iteration)
-        for param_group in self._optimizer.param_groups:
-            if param_group["name"] == "static_xyz":
-                param_group["lr"] = self._xyz_scheduler_args(iteration)
-
-    def _reset_opacity(self):
-        super()._reset_opacity()
-        new_opacity = inverse_sigmoid(
-            0.1
-            * torch.ones(
-                (self._static_xyz.shape[0], 1), dtype=torch.float, device=self._device
-            )
-        )
-        masked_opacity = torch.where(
-            (self._count_in_cameras > 0).unsqueeze(1), new_opacity, self._static_opacity
-        )
-        self._static_opacity = self._reset_param_group(
-            {"static_opacity": masked_opacity}
-        )["static_opacity"]
-
-    def _remove_outlier(self):
-        super()._remove_outlier()
-        max_bounds = torch.tensor(self._max_bounds_init, device=self._device)
-        min_bounds = torch.tensor(self._min_bounds_init, device=self._device)
-        mask_max = torch.any(self._static_xyz > max_bounds, dim=1)
-        mask_min = torch.any(self._static_xyz < min_bounds, dim=1)
-        mask = torch.logical_or(mask_max, mask_min)
-        self._prune_points_static(mask)
-
-    def _filter_invisible(self):
-        super()._filter_invisible()
-        self._prune_points_static(
-            torch.sigmoid(self._static_opacity) < self._prune_threshold
-        )
-
-    def _prune_points_static(self, mask: torch.Tensor):
-        mask = mask.squeeze()
-        valid_point_mask = torch.logical_not(mask)
-        param_list = [
-            "static_xyz",
-            "static_t",
-            "static_xyz_scales",
-            "static_rotation",
-            "static_motion",
-            "static_omega",
-            "static_opacity",
-            "static_features_dc",
-        ]
-        param_dict = {param: valid_point_mask for param in param_list}
-        gaussian_optimizable_tensors = self._prune_param_group(param_dict)
-        self._static_xyz = gaussian_optimizable_tensors["static_xyz"]
-        self._static_t = gaussian_optimizable_tensors["static_t"]
-        self._static_xyz_scales = gaussian_optimizable_tensors["static_xyz_scales"]
-        self._static_rotation = gaussian_optimizable_tensors["static_rotation"]
-        self._static_motion = gaussian_optimizable_tensors["static_motion"]
-        self._static_omega = gaussian_optimizable_tensors["static_omega"]
-        self._static_opacity = gaussian_optimizable_tensors["static_opacity"]
-        self._static_features_dc = gaussian_optimizable_tensors["static_features_dc"]
-
-        torch.cuda.empty_cache()
-
-    def __len__(self) -> int:
-        return super().__len__() + self._static_xyz.shape[0]
+        elements[:] = list(map(tuple, attributes))
+        pcd_vertex_element = PlyElement.describe(elements, "vertex")
+        PlyData([pcd_vertex_element]).write(pcd_path)

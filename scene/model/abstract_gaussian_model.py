@@ -1,8 +1,6 @@
 from typing import Type
 import torch
-import logging
 from abc import abstractmethod
-from utils.graphics_utils import BasicPointCloud
 from scene.dataset.abstract_dataset import AbstractDataset
 from scene.cameras import Camera
 
@@ -10,15 +8,16 @@ from scene.cameras import Camera
 class AbstractModel:
     @abstractmethod
     def __init__(self, model_params: dict):
-        try:
-            self._device = torch.device(model_params["device"])
-        except Exception as e:
-            logging.error(f"Error while setting device: {e}\nUsing cuda by default")
-            self._device = torch.device("cuda")
+        pass
+
+    @abstractmethod
+    def __len__(self) -> int:
+        pass
 
     @property
+    @abstractmethod
     def device(self) -> torch.device:
-        return self._device
+        pass
 
     @property
     @abstractmethod
@@ -37,26 +36,24 @@ class AbstractModel:
     def save(self, pcd_path: str):
         pass
 
+    @abstractmethod
     def iteration_start(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         pass
 
-    def get_regularization_loss(self, camera: Camera, dataset: AbstractDataset) -> torch.Tensor:
-        return torch.tensor(0.0, device=self._device)
-
     @abstractmethod
     def render(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
-        # This function is used for rendering with optimization
-        pass
-
-    def render_forward_only(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
-        # This function is used for forward rendering, i.e. rendering without optimization
-        return self.render(
-            camera, GRsetting, GRzer
-        )  # Default implementation. Can be overridden.
-
-    def iteration_end(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         pass
 
     @abstractmethod
-    def __len__(self) -> int:
+    def render_forward_only(self, camera: Camera, GRsetting: Type, GRzer: Type) -> dict:
+        pass
+
+    @abstractmethod
+    def get_regularization_loss(
+        self, camera: Camera, dataset: AbstractDataset
+    ) -> torch.Tensor:
+        pass
+
+    @abstractmethod
+    def iteration_end(self, iteration: int, camera: Camera, dataset: AbstractDataset):
         pass

@@ -40,19 +40,15 @@ class Camera:
     def __init__(
         self,
         camera_info: CameraInfo,
-        device: torch.device = torch.device("cuda"),
+        device: str = "cuda",
         data_device: str = "cpu",
         int8_mode: bool = True,
         resolution_scale: float = None,
         lazy_load: bool = True,
     ):
         self._camera_info = camera_info
-        self._device = device
-        try:
-            self._data_device = torch.device(data_device)
-        except Exception as e:
-            logging.error(f"Error while setting device: {e}\nUsing CPU instead.")
-            self._data_device = torch.device("cpu")
+        self._device = torch.device(device)
+        self._data_device = torch.device(data_device)
         self._int8_mode = int8_mode
         self._resolution_scale = resolution_scale
         self._lazy_load = lazy_load
@@ -168,18 +164,29 @@ class Camera:
         resize_image = PILtoTorch(image, resolution=self.resized_resolution)
 
         if self._camera_info.mask_folder is not None:
-            image_mask = Image.open(
+            paths = [
                 os.path.join(
                     self._camera_info.mask_folder, self._camera_info.image_name
-                )
-            )
+                ),
+                os.path.join(
+                    self._camera_info.mask_folder,
+                    self._camera_info.image_name + "." + self._camera_info.image_name.split(".")[-1],
+                ),
+            ]
+            image_mask = None
+            for path in paths:
+                if os.path.exists(path):
+                    image_mask = Image.open(path)
+                    break
+            if image_mask is None:
+                raise ValueError("Mask not found")
+            image_mask = image_mask.convert("L")
             if (
                 self._camera_info.width != image_mask.width
                 or self._camera_info.height != image_mask.height
             ):
                 raise ValueError("Mask size does not match camera parameters")
 
-            image_mask = image_mask.convert("L")
             resized_image_mask = PILtoTorch(image_mask, resolution=self.resized_resolution)
         elif resize_image.shape[0] == 4:
             resized_image_mask = resize_image[3:4, ...]

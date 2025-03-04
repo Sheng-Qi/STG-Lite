@@ -1,74 +1,89 @@
 TRAINER:
+  debug: false
+  device: cuda
+  dataset_type: technicolor
   renderer: diff_gaussian_rasterization_ch3
   forward_renderer: forward_lite
   model_type: spacetime_360
   model_path: output/spacetime_360
   load_iteration: null
-  iterations: 30000
-  saving_iterations: [200, 2000, 4000, 8000, 12000, 16000, 20000, 25000, 29999]
+  max_iterations: 30000
+  saving_iterations: [200, 1700, 3000, 5000, 8000, 10000, 15000, 20000, 25000, 30000]
   trainer_seed: 0
   lambda_dssim: 0.2
   model_params:
-    device: cuda
-    enable_color_transform: true
-    lambda_color_transform: 0.01
-    color_transform_matrix_model_path_prior: null
-    t_scale_init: -2.0
-    split_num: 2
-    split_ratio: 0.8
-    split_ratio_time: 0.55
-    grad_threshold_xyz: 0.01
-    percent_dense_xyz: 0.01
-    enable_time_density: true
-    grad_threshold_time: 0.000005
-    percent_dense_time: 0.015
-    densification_start: 2000
-    densification_step: 100
-    densification_end: 15000
-    reset_opacity_start: 3000
-    reset_opacity_step: 3000
-    reset_opacity_end: 18000
-    prune_points_start: 0
-    prune_points_step: 10
-    prune_points_end: 15000
-    prune_threshold: 0.005
-    remove_outlier_iterations: []
+    color_transform:
+      enable: true
+      lambda_loss: 0.01
+      model_path_prior: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration/input_ply/color_transform_matrix.pth
+      lr:
+        init: 0.05
+        final: 0.0005
+        delay_steps: null
+        delay_mult: null
+        max_steps: null
+    density_control:
+      enable: true
+      split_num: 2
+      split_ratio: 0.5
+      th_method: simple
+      grad_th_xyz: 0.001
+      scale_th_xyz: 0.01
+      start: null
+      step: null
+      end: null
+    reset_opacity:
+      enable: true
+      start: null
+      step: null
+      end: null
+    prune_points:
+      enable: true
+      start: 2
+      step: null
+      end: null
+      th_opacity: 0.005
+      th_radii: 999999
     learning_rate:
-      xyz_init: 0.00016
-      xyz_final: 0.0000016
-      xyz_delay_mult: 0.01
-      xyz_delay_steps: 100
-      xyz_max_steps: 30000
-      t: 0.0001
+      xyz:
+        init: 0.00016
+        final: 0.0000016
+        delay_steps: null
+        delay_mult: null
+        max_steps: null
       xyz_scales: 0.005
-      t_scale: 0.03
       rotation: 0.001
-      motion: 3.5
-      omega: 0.0001
       opacity: 0.05
       features_dc: 0.0025
-      color_transformation_init: 0.05
-      color_transformation_final: 0.0005
-      color_transformation_delay_mult: 0.01
-      color_transformation_delay_steps: 1000
-      color_transformation_max_steps: 30000
-    white_background: false
-    static_ply_path: /data/yzx/ours/scene6_puppy_360/colmap/input_ply/static.ply
-    border_image_threshold: 210
-    enable_simplified_border_method: true
-  dataset_type: technicolor
+    spacetime:
+      t_scale_init: -2.0
+      motion_degree: 3
+      omega_degree: 1
+      time_density_control:
+        enable: false
+        split_ratio: 0.74
+        th_grad: 0.00002
+        th_scale: 0.0002
+      learning_rate:
+        t: 0.0001
+        t_scale: 0.03
+        motion: 3.5
+        omega: 0.0001
+    static:
+      ply_path: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration/input_ply/static.ply
   dataset_params:
-    source_path: /data/yzx/ours/scene6_puppy_360/colmap
-    mask_path: null
+    source_path: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration
+    relative_mask_path: masks_foreground
     resolution_scale: 2.0
-    frame_rate: 60
-    start_frame: 0
-    duration: 60
     is_eval: true
     train_test_split_seed: 0
     near: 0.01
     far: 100.0
-    lazy_load: false
+    lazy_load: true
     ply_path: null
     data_device: cpu
     int8_mode: true
+    time_params:
+      frame_rate: 60
+      start_frame: 3000
+      duration: 60

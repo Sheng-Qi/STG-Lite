@@ -1,9 +1,11 @@
 from importlib import import_module
-from typing import Type
+from typing import Type, Literal
 from scene.model.abstract_gaussian_model import AbstractModel
 
+ModelNames = Literal["basic", "spacetime", "spacetime_360"]
 
-def parse_model(model: str) -> Type[AbstractModel]:
+
+def parse_model(model: ModelNames) -> Type[AbstractModel]:
     MODEL_DICT = {
         "basic": ["basic_gaussian_model", "BasicGaussianModel"],
         "spacetime": ["spacetime_gaussian_model", "SpacetimeGaussianModel"],
@@ -13,7 +15,7 @@ def parse_model(model: str) -> Type[AbstractModel]:
     return getattr(model_module, MODEL_DICT[model][1])
 
 
-def parse_cfg_args(model: str) -> str:
+def parse_cfg_args(model: ModelNames) -> str:
     MODEL_DICT = {
         "basic": "Namespace(sh_degree=0)",
         "spacetime": "Namespace(sh_degree=3)",
