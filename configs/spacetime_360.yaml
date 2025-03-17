@@ -5,7 +5,7 @@ TRAINER:
   renderer: diff_gaussian_rasterization_ch3
   forward_renderer: forward_lite
   model_type: spacetime_360
-  model_path: output/spacetime_360
+  model_path: output/spacetime_360_convert2_split
   load_iteration: null
   max_iterations: 30000
   saving_iterations: [200, 1700, 3000, 5000, 8000, 10000, 15000, 20000, 25000, 30000]
@@ -15,7 +15,7 @@ TRAINER:
     color_transform:
       enable: true
       lambda_loss: 0.01
-      model_path_prior: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration/input_ply/color_transform_matrix.pth
+      model_path_prior: null
       lr:
         init: 0.05
         final: 0.0005
@@ -24,7 +24,7 @@ TRAINER:
         max_steps: null
     density_control:
       enable: true
-      split_num: 2
+      split_num: 4
       split_ratio: 0.5
       th_method: simple
       grad_th_xyz: 0.001
@@ -71,9 +71,12 @@ TRAINER:
         omega: 0.0001
     static:
       ply_path: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration/input_ply/static.ply
+      border_control:
+        method: simple
+        th_convert: 2
   dataset_params:
     source_path: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration
-    relative_mask_path: masks_foreground
+    relative_mask_path: null
     resolution_scale: 2.0
     is_eval: true
     train_test_split_seed: 0

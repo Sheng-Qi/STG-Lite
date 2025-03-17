@@ -138,7 +138,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
 
     def rotation_activated_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.normalize(self.rotation_projected(delta_t))
-    
+
     def opacity_projected(self, delta_t: torch.Tensor) -> torch.Tensor:
         return inverse_sigmoid(self.opacity_activated_projected(delta_t))
 
@@ -603,7 +603,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 * self._spacetime_params.time_density_control.split_ratio
             )
 
-            self._extend_new_parameters(
+            self._extend_spacetime_parameters(
                 new_xyz,
                 new_t,
                 new_xyz_scales,
@@ -630,7 +630,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 )
             )
 
-    def _extend_new_parameters(
+    def _extend_spacetime_parameters(
         self,
         new_xyz,
         new_t,

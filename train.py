@@ -18,6 +18,7 @@ from utils.renderer_utils import parse_renderer, RendererNames, is_forward_only
 from utils.camera_utils import camera_to_JSON
 from utils.loss_utils import get_loss, ssim
 
+
 class TrainerParams(BaseModel):
     debug: bool
     device: str
@@ -33,7 +34,7 @@ class TrainerParams(BaseModel):
     lambda_dssim: float = 0.2
     model_params: dict
     dataset_params: dict
-    
+
     @field_validator("device")
     def validate_device(cls, value):
         if not torch.cuda.is_available() and value == "cuda":
@@ -45,7 +46,9 @@ class TrainerParams(BaseModel):
     @field_validator("renderer")
     def validate_renderer(cls, value):
         if is_forward_only(value):
-            raise ValueError(f"Renderer {value} is only supported for forward rendering")
+            raise ValueError(
+                f"Renderer {value} is only supported for forward rendering"
+            )
         return value
 
     @field_validator("saving_iterations")
@@ -54,11 +57,14 @@ class TrainerParams(BaseModel):
             raise ValueError("All saving iterations must be positive integers")
         return value
 
+
 class Trainer:
     def __init__(self, trainer_options: dict):
         self._trainer_params = TrainerParams.model_validate(trainer_options)
 
-        logging.basicConfig(level=logging.INFO if not self._trainer_params.debug else logging.DEBUG)
+        logging.basicConfig(
+            level=logging.INFO if not self._trainer_params.debug else logging.DEBUG
+        )
         self._device = torch.device(self._trainer_params.device)
 
         self._GaussianRasterizer, self._GaussianRasterizationSettings = parse_renderer(
@@ -69,8 +75,12 @@ class Trainer:
         )
         self._GaussianModel = parse_model(self._trainer_params.model_type)
 
-        self._dataset = parse_dataset(self._trainer_params.dataset_type)(self._trainer_params.dataset_params, self._dataset_context)
-        self._gaussians = self._GaussianModel(self._trainer_params.model_params, self._model_context)
+        self._dataset = parse_dataset(self._trainer_params.dataset_type)(
+            self._trainer_params.dataset_params, self._dataset_context
+        )
+        self._gaussians = self._GaussianModel(
+            self._trainer_params.model_params, self._model_context
+        )
 
         self.__progress_bar = None
         self.__ema_loss_for_log = None
@@ -119,8 +129,9 @@ class Trainer:
             cameras.extend(self._dataset.test_cameras)
             sorted_cameras = sorted(
                 cameras,
-                key=lambda x: os.path.join(
-                    x.camera_info.image_folder, x.camera_info.image_name
+                key=lambda x: (
+                    x.camera_info.camera_id,
+                    os.path.join(x.camera_info.image_folder, x.camera_info.image_name),
                 ),
             )
             for id, cam in enumerate(sorted_cameras):
@@ -195,6 +206,14 @@ class Trainer:
                 self._gaussians.iteration_end(
                     iteration, selected_train_camera, self._dataset
                 )
+                if self._trainer_params.debug:
+                    path = os.path.join(
+                        self._trainer_params.model_path,
+                        "rendered",
+                        f"iteration_{iteration}.png",
+                    )
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    torchvision.utils.save_image(render_pkgs["rendered_image"], path)
                 self.__ema_loss_for_log = (
                     (0.4 * loss.item() + 0.6 * self.__ema_loss_for_log)
                     if self.__ema_loss_for_log is not None
