@@ -5,7 +5,7 @@ TRAINER:
   renderer: diff_gaussian_rasterization_ch3
   forward_renderer: forward_lite
   model_type: spacetime_360
-  model_path: output/spacetime_360_convert2_split
+  model_path: output/spacetime_360
   load_iteration: null
   max_iterations: 30000
   saving_iterations: [200, 1700, 3000, 5000, 8000, 10000, 15000, 20000, 25000, 30000]
