@@ -40,6 +40,7 @@ class BasicColmapDatasetParams(BaseModel):
 
 class BasicColmapDatasetContext(BaseModel):
     device: str
+    parallel_load: bool = True
 
 
 class BasicColmapDataset(AbstractDataset):
@@ -53,6 +54,9 @@ class BasicColmapDataset(AbstractDataset):
         self._test_camera_index = None
         self._ply_path = self._dataset_params.ply_path
         self._ply_data = None
+        
+        if self._context.parallel_load and self._dataset_params.lazy_load:
+            logging.warning("Parallel load is enabled but lazy load is disabled. Lazy load will not be working.")
 
     @property
     def near(self) -> float:
@@ -214,6 +218,7 @@ class BasicColmapDataset(AbstractDataset):
                 timestamp=None,
                 timestamp_ratio=None,
             )
+            should_load_later = self._dataset_params.lazy_load or self._context.parallel_load
             cameras.append(
                 Camera(
                     camera_info,
@@ -221,7 +226,7 @@ class BasicColmapDataset(AbstractDataset):
                     data_device=self._dataset_params.data_device,
                     int8_mode=self._dataset_params.int8_mode,
                     resolution_scale=self._dataset_params.resolution_scale,
-                    lazy_load=self._dataset_params.lazy_load,
+                    should_load_later=should_load_later,
                 )
             )
 

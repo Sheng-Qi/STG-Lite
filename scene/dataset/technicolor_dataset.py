@@ -11,16 +11,20 @@ from utils.colmap_utils import qvec2rotmat, read_points3D_binary, read_points3D_
 from utils.graphics_utils import focal2fov
 from utils.ply_utils import storePly4D, fetchPly4D
 
+
 class TechinicolorDatasetParams(BaseModel):
     frame_rate: float = Field(..., gt=0)
     start_frame: int = Field(..., ge=0)
     duration: int = Field(..., gt=0)
 
+
 class TechnicolorDataset(BasicColmapDataset):
 
     def __init__(self, dataset_params: dict, context: dict):
         time_params = dataset_params["time_params"]
-        non_time_params = {k: v for k, v in dataset_params.items() if k != "time_params"}
+        non_time_params = {
+            k: v for k, v in dataset_params.items() if k != "time_params"
+        }
         super().__init__(non_time_params, context)
         self._time_params = TechinicolorDatasetParams.model_validate(time_params)
 
@@ -60,10 +64,15 @@ class TechnicolorDataset(BasicColmapDataset):
     def _read_colmap_cameras(self) -> list[Camera]:
         cameras = list[Camera]()
         for time in tqdm(
-            range(self._time_params.start_frame, self._time_params.start_frame + self._time_params.duration),
+            range(
+                self._time_params.start_frame,
+                self._time_params.start_frame + self._time_params.duration,
+            ),
             desc="Reading cameras progress",
         ):
-            subfolder_path = os.path.join(self._dataset_params.source_path, f"colmap_{time}")
+            subfolder_path = os.path.join(
+                self._dataset_params.source_path, f"colmap_{time}"
+            )
             if not os.path.exists(subfolder_path):
                 raise FileNotFoundError(f"Colmap folder not found at {subfolder_path}")
 
@@ -132,7 +141,7 @@ class TechnicolorDataset(BasicColmapDataset):
                         data_device=self._dataset_params.data_device,
                         int8_mode=self._dataset_params.int8_mode,
                         resolution_scale=self._dataset_params.resolution_scale,
-                        lazy_load=self._dataset_params.lazy_load,
+                        should_load_later=self._dataset_params.lazy_load,
                     )
                 )
 
@@ -146,19 +155,36 @@ class TechnicolorDataset(BasicColmapDataset):
         totalrgb = list()
         totaltime = list()
 
-        for time in range(self._time_params.start_frame, self._time_params.start_frame + self._time_params.duration):
+        for time in range(
+            self._time_params.start_frame,
+            self._time_params.start_frame + self._time_params.duration,
+        ):
             paths = [
                 os.path.join(
-                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "0", "points3D.bin"
+                    self._dataset_params.source_path,
+                    f"colmap_{time}",
+                    "sparse",
+                    "0",
+                    "points3D.bin",
                 ),
                 os.path.join(
-                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "0", "points3D.txt"
+                    self._dataset_params.source_path,
+                    f"colmap_{time}",
+                    "sparse",
+                    "0",
+                    "points3D.txt",
                 ),
                 os.path.join(
-                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "points3D.bin"
+                    self._dataset_params.source_path,
+                    f"colmap_{time}",
+                    "sparse",
+                    "points3D.bin",
                 ),
                 os.path.join(
-                    self._dataset_params.source_path, f"colmap_{time}", "sparse", "points3D.txt"
+                    self._dataset_params.source_path,
+                    f"colmap_{time}",
+                    "sparse",
+                    "points3D.txt",
                 ),
             ]
             for path in paths:
@@ -176,7 +202,9 @@ class TechnicolorDataset(BasicColmapDataset):
             totalxyz.append(xyz)
             totalrgb.append(rgb)
             totaltime.append(
-                np.ones((xyz.shape[0], 1)) * (time - self._time_params.start_frame) / self._time_params.duration
+                np.ones((xyz.shape[0], 1))
+                * (time - self._time_params.start_frame)
+                / self._time_params.duration
             )
         xyz = np.concatenate(totalxyz, axis=0)
         rgb = np.concatenate(totalrgb, axis=0)

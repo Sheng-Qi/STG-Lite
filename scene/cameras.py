@@ -44,14 +44,14 @@ class Camera:
         data_device: str = "cpu",
         int8_mode: bool = True,
         resolution_scale: float = None,
-        lazy_load: bool = True,
+        should_load_later: bool = True,
     ):
         self._camera_info = camera_info
         self._device = torch.device(device)
         self._data_device = torch.device(data_device)
         self._int8_mode = int8_mode
         self._resolution_scale = resolution_scale
-        self._lazy_load = lazy_load
+        self._should_load_later = should_load_later
 
         self._image = None
         self._image_mask = None
@@ -62,7 +62,7 @@ class Camera:
 
         self._resized_resolution = None
 
-        if not lazy_load:
+        if not should_load_later:
             self._load_and_process_image()
             self._pre_calculate_matrix()
 
@@ -141,16 +141,26 @@ class Camera:
         return self._camera_center
 
     def check_in_image(self, xyzs: torch.Tensor) -> torch.Tensor:
-        projected = geom_transform_points(xyzs, self.full_proj_transform)  # shape: [N, 3]
+        projected = geom_transform_points(
+            xyzs, self.full_proj_transform
+        )  # shape: [N, 3]
         in_bounds = (
             (projected[:, 0] >= -1)
             & (projected[:, 0] <= 1)
             & (projected[:, 1] >= -1)
             & (projected[:, 1] <= 1)
         )
-        cam_coords = geom_transform_points(xyzs, self.world_view_transform)  # shape: [N, 3]
+        cam_coords = geom_transform_points(
+            xyzs, self.world_view_transform
+        )  # shape: [N, 3]
         valid_depth = cam_coords[:, 2] > 0
         return in_bounds & valid_depth
+
+    def load(self):
+        if self._image is None:
+            self._load_and_process_image()
+        if self._world_view_transform is None:
+            self._pre_calculate_matrix()
 
     def _load_and_process_image(self):
         image = Image.open(
@@ -170,7 +180,9 @@ class Camera:
                 ),
                 os.path.join(
                     self._camera_info.mask_folder,
-                    self._camera_info.image_name + "." + self._camera_info.image_name.split(".")[-1],
+                    self._camera_info.image_name
+                    + "."
+                    + self._camera_info.image_name.split(".")[-1],
                 ),
             ]
             image_mask = None
@@ -187,7 +199,9 @@ class Camera:
             ):
                 raise ValueError("Mask size does not match camera parameters")
 
-            resized_image_mask = PILtoTorch(image_mask, resolution=self.resized_resolution)
+            resized_image_mask = PILtoTorch(
+                image_mask, resolution=self.resized_resolution
+            )
         elif resize_image.shape[0] == 4:
             resized_image_mask = resize_image[3:4, ...]
         else:
@@ -198,13 +212,17 @@ class Camera:
 
         if self._int8_mode:
             if resized_image_mask is not None:
-                self._image_mask = (resized_image_mask * 255).to(torch.uint8).to(self._data_device)
+                self._image_mask = (
+                    (resized_image_mask * 255).to(torch.uint8).to(self._data_device)
+                )
             else:
                 self._image_mask = None
             self._image = (resized_image_gt * 255).to(torch.uint8).to(self._data_device)
         else:
             if resized_image_mask is not None:
-                self._image_mask = resized_image_mask.clamp(0.0, 1.0).to(self._data_device)
+                self._image_mask = resized_image_mask.clamp(0.0, 1.0).to(
+                    self._data_device
+                )
             else:
                 self._image_mask = None
             self._image = resized_image_gt.clamp(0.0, 1.0).to(self._data_device)

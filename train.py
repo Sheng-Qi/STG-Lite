@@ -8,6 +8,7 @@ import yaml
 import shutil
 from typing import Optional, Literal
 from tqdm import tqdm
+import concurrent.futures
 import logging
 from pydantic import BaseModel, field_validator, Field
 from scene.cameras import Camera
@@ -33,6 +34,8 @@ class TrainerParams(BaseModel):
     trainer_seed: int = 0
     lambda_dssim: float = 0.2
     method_mask_loss: Literal["none", "cover", "penalty"] = "none"
+    parallel_load: bool
+    num_workers_load: int = Field(..., ge=-1)
     model_params: dict
     dataset_params: dict
 
@@ -98,6 +101,7 @@ class Trainer:
     def _dataset_context(self) -> dict:
         return {
             "device": self._trainer_params.device,
+            "parallel_load": self._trainer_params.parallel_load,
         }
 
     @property
@@ -166,6 +170,15 @@ class Trainer:
             )
 
     def train_model(self):
+        if self._trainer_params.parallel_load:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = []
+                for camera in self._dataset.train_cameras:
+                    futures.append(executor.submit(camera.load))
+
+                for _ in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Loading images"):
+                    pass
+        
         if len(self._gaussians) == 0:
             raise ValueError("Need to load model before training")
         np.random.seed(self._trainer_params.trainer_seed)

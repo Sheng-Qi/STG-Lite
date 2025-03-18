@@ -12,6 +12,8 @@ TRAINER:
   trainer_seed: 0
   lambda_dssim: 0.2
   method_mask_loss: none
+  parallel_load: false
+  num_workers_load: 16
   model_params:
     lambda_mask: 0.001
     color_transform:

@@ -83,9 +83,12 @@ class MovingRigDataset(BasicColmapDataset):
             T = np.array(extrinsics.tvec)
             image_folder = os.path.join(self._dataset_params.source_path, "images")
             image_name = extrinsics.name
-            
+
             if self._dataset_params.relative_mask_path is not None:
-                mask_folder = os.path.join(self._dataset_params.source_path, self._dataset_params.relative_mask_path)
+                mask_folder = os.path.join(
+                    self._dataset_params.source_path,
+                    self._dataset_params.relative_mask_path,
+                )
             else:
                 mask_folder = None
 
@@ -117,7 +120,7 @@ class MovingRigDataset(BasicColmapDataset):
                     data_device=self._dataset_params.data_device,
                     int8_mode=self._dataset_params.int8_mode,
                     resolution_scale=self._dataset_params.resolution_scale,
-                    lazy_load=self._dataset_params.lazy_load,
+                    should_load_later=self._dataset_params.lazy_load,
                 )
             )
 
@@ -127,8 +130,12 @@ class MovingRigDataset(BasicColmapDataset):
 
     def _create_ply_from_colmap(self):
         paths = [
-            os.path.join(self._dataset_params.source_path, "sparse", "0", "points3D.bin"),
-            os.path.join(self._dataset_params.source_path, "sparse", "0", "points3D.txt"),
+            os.path.join(
+                self._dataset_params.source_path, "sparse", "0", "points3D.bin"
+            ),
+            os.path.join(
+                self._dataset_params.source_path, "sparse", "0", "points3D.txt"
+            ),
             os.path.join(self._dataset_params.source_path, "sparse", "points3D.bin"),
             os.path.join(self._dataset_params.source_path, "sparse", "points3D.txt"),
         ]
