@@ -176,7 +176,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             - self.t
         )
 
-        self._rendered_image, self._vspace_radii, self._rendered_depth = rasterizer(
+        result = rasterizer(
             means3D=self.xyz_projected(delta_t),
             means2D=self._vspace_points,
             shs=None,
@@ -186,6 +186,13 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             rotations=self.rotation_activated_projected(delta_t),
             cov3D_precomp=None,
         )
+
+        if len(result) == 4:
+            self._rendered_image, self._vspace_radii, self._rendered_depth, self._vspace_values = result
+        elif len(result) == 3:
+            self._rendered_image, self._vspace_radii, self._rendered_depth = result
+        else:
+            raise ValueError("Invalid result length")
 
         if self._basic_params.color_transform.enable:
             self._rendered_image = self._apply_color_transformation(

@@ -6,7 +6,7 @@ import json
 import argparse
 import yaml
 import shutil
-from typing import Optional
+from typing import Optional, Literal
 from tqdm import tqdm
 import logging
 from pydantic import BaseModel, field_validator, Field
@@ -32,6 +32,7 @@ class TrainerParams(BaseModel):
     max_iterations: int = Field(..., gt=0)
     trainer_seed: int = 0
     lambda_dssim: float = 0.2
+    method_mask_loss: Literal["none", "cover", "penalty"] = "none"
     model_params: dict
     dataset_params: dict
 
@@ -114,6 +115,7 @@ class Trainer:
                 )
             ),
             "max_iterations": self._trainer_params.max_iterations,
+            "method_mask_loss": self._trainer_params.method_mask_loss,
         }
 
     def load_model(self):
@@ -191,11 +193,20 @@ class Trainer:
                 self._GaussianRasterizationSettings,
                 self._GaussianRasterizer,
             )
-            loss = get_loss(
-                render_pkgs["rendered_image"] * selected_train_camera.image_mask,
-                selected_train_camera.image,
-                self._trainer_params.lambda_dssim,
-            ) + self._gaussians.get_regularization_loss(
+            if self._trainer_params.method_mask_loss == "cover":
+                loss = get_loss(
+                    render_pkgs["rendered_image"] * selected_train_camera.image_mask,
+                    selected_train_camera.image * selected_train_camera.image_mask,
+                    self._trainer_params.lambda_dssim,
+                )
+            else:
+                loss = get_loss(
+                    render_pkgs["rendered_image"],
+                    selected_train_camera.image,
+                    self._trainer_params.lambda_dssim,
+                )
+
+            loss += self._gaussians.get_regularization_loss(
                 camera=selected_train_camera, dataset=self._dataset
             )
             loss.backward()

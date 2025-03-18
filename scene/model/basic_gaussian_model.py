@@ -33,7 +33,7 @@ class BasicGaussianModelContext(BaseModel):
     camera_count: int = Field(..., gt=0)
     camera_id_count: int = Field(..., gt=0)
     max_iterations: int = Field(..., gt=0)
-
+    method_mask_loss: Literal["none", "cover", "penalty"]
 
 class SchedulerLearningRateParams(BaseModel):
     init: float = Field(..., gt=0)
@@ -149,6 +149,7 @@ class LearningRateParams(BaseModel):
 
 
 class BasciGaussianModelParams(BaseModel):
+    lambda_mask: float
     color_transform: ColorTransformParams
     density_control: DensityControlParams
     reset_opacity: ResetOpacityParams
@@ -184,6 +185,7 @@ class BasicGaussianModel(AbstractModel):
         # Last densification results to cache
         self._vspace_radii = None
         self._vspace_points = None
+        self._vspace_values = None
 
         # Cached densification parameters
         self._max_vspace_grads = None
@@ -303,7 +305,7 @@ class BasicGaussianModel(AbstractModel):
             debug=False,
         )
         rasterizer = GRzer(raster_settings=raster_settings)
-        self._rendered_image, self._vspace_radii, self._rendered_depth = rasterizer(
+        result = rasterizer(
             means3D=self.xyz,
             means2D=self._vspace_points,
             shs=None,
@@ -313,6 +315,13 @@ class BasicGaussianModel(AbstractModel):
             rotations=self.rotation_activated,
             cov3D_precomp=None,
         )
+
+        if len() == 4:
+            self._rendered_image, self._vspace_radii, self._rendered_depth, self._vspace_values = result
+        elif len(result) == 3:
+            self._rendered_image, self._vspace_radii, self._rendered_depth = result
+        else:
+            raise ValueError("Invalid result length")
 
         if self._basic_params.color_transform.enable:
             self._rendered_image = self._apply_color_transformation(
@@ -333,6 +342,9 @@ class BasicGaussianModel(AbstractModel):
         loss = torch.tensor(0.0, device=self.device)
         if self._basic_params.color_transform.enable:
             loss += self._calculate_color_regularization_loss(camera)
+
+        if self._context.method_mask_loss == "penalty":
+            loss += self._calculate_mask_penalty_loss(camera)
         return loss
 
     def iteration_end(self, iteration: int, camera: Camera, dataset: AbstractDataset):
@@ -808,3 +820,49 @@ class BasicGaussianModel(AbstractModel):
             self._vspace_points = self._vspace_points[valid_point_mask]
 
         torch.cuda.empty_cache()
+
+    def _calculate_mask_penalty_loss(self, camera):
+        vspace_values = self._vspace_values.to(self.device)
+        image_mask = camera.image_mask.squeeze(0).to(self.device)
+        N, _ = vspace_values.shape
+        penalty = torch.zeros(N, device=self.device)
+
+        skip_mask = (
+            (vspace_values[:, 0] == 0)
+            & (vspace_values[:, 1] == 0)
+            & (
+                self.opacity_activated.squeeze()
+                < self._basic_params.prune_points.th_opacity
+            )
+        )
+        non_skip_indices = (~skip_mask).nonzero(as_tuple=True)[0]
+
+        if len(non_skip_indices) == 0:
+            return 0.0
+
+        H, W = image_mask.shape[:2]
+        basic_penalty_pixel = torch.log(
+            torch.max(torch.tensor([H, W], device=self.device)) + 1
+        )
+
+        x_int = vspace_values[non_skip_indices, 0].long()
+        y_int = vspace_values[non_skip_indices, 1].long()
+
+        outside_mask = (x_int < 0) | (x_int >= W) | (y_int < 0) | (y_int >= H)
+        penalty[non_skip_indices[outside_mask]] = basic_penalty_pixel
+
+        inside_mask = ~outside_mask
+        inside_vals = image_mask[y_int[inside_mask], x_int[inside_mask]]
+        zero_mask = torch.zeros(len(non_skip_indices), dtype=torch.bool, device=self.device)
+        zero_mask[inside_mask] = inside_vals == 0
+
+        non_zero_coords = torch.nonzero(image_mask).float().to(self.device)
+        if non_zero_coords.numel() > 0:
+            distances = torch.cdist(vspace_values[non_skip_indices], non_zero_coords)
+            min_distances = distances.min(dim=1).values
+            penalty_value = torch.log(min_distances + 1)
+            penalty[non_skip_indices[zero_mask]] = penalty_value[zero_mask]
+        else:
+            penalty[non_skip_indices[zero_mask]] = basic_penalty_pixel
+
+        return self._basic_params.lambda_mask * torch.mean(penalty)

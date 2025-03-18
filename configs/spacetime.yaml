@@ -11,7 +11,9 @@ TRAINER:
   saving_iterations: [200, 1700, 3000, 5000, 8000, 10000, 15000, 20000, 25000, 30000]
   trainer_seed: 0
   lambda_dssim: 0.2
+  method_mask_loss: none
   model_params:
+    lambda_mask: 0.001
     color_transform:
       enable: true
       lambda_loss: 0.01

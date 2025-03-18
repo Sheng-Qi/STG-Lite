@@ -45,6 +45,11 @@ class Spacetime360Model(SpacetimeGaussianModel):
         self._train_id_cameras_dict = None
         self._cached_in_image_counts_combined = None
 
+        self._static_vspace_values: torch.Tensor = None
+
+        self._static_vspce_points: torch.Tensor = None
+        self._static_vspace_radii: torch.Tensor = None
+
         self.__static_xyz: torch.Tensor = None
         self.__static_xyz_scales: torch.Tensor = None
         self.__static_rotation: torch.Tensor = None
@@ -133,6 +138,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             requires_grad=True,
             device=self.device,
         )
+        self._static_vspce_points.retain_grad()
 
         raster_settings = GRsetting(
             image_height=int(camera.resized_height),
@@ -160,7 +166,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             - self.t
         )
 
-        self._rendered_image, self._vspace_radii, self._rendered_depth = rasterizer(
+        result = rasterizer(
             means3D=torch.cat((self.xyz_projected(delta_t), self.__static_xyz), dim=0),
             means2D=torch.cat((self._vspace_points, self._static_vspce_points), dim=0),
             shs=None,
@@ -187,11 +193,21 @@ class Spacetime360Model(SpacetimeGaussianModel):
             cov3D_precomp=None,
         )
 
+        if len(result) == 4:
+            self._rendered_image, self._vspace_radii, self._rendered_depth, means2D = result
+            self._vspace_values = means2D[: self.xyz.shape[0]]
+            self._static_vspace_values = means2D[self.xyz.shape[0] :]
+        elif len(result) == 3:
+            self._rendered_image, self._vspace_radii, self._rendered_depth = result
+        else:
+            raise ValueError("Invalid result length")
+
         if self._basic_params.color_transform.enable:
             self._rendered_image = self._apply_color_transformation(
                 camera, self._rendered_image
             )
 
+        self._static_vspace_radii = self._vspace_radii[self.xyz.shape[0] :]
         self._vspace_radii = self._vspace_radii[: self.xyz.shape[0]]
 
         return {
