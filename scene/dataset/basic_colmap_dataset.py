@@ -54,7 +54,7 @@ class BasicColmapDataset(AbstractDataset):
         self._test_camera_index = None
         self._ply_path = self._dataset_params.ply_path
         self._ply_data = None
-        
+
         if self._context.parallel_load and self._dataset_params.lazy_load:
             logging.warning("Parallel load is enabled but lazy load is disabled. Lazy load will not be working.")
 
@@ -124,7 +124,7 @@ class BasicColmapDataset(AbstractDataset):
     def _load_cameras(self):
         cameras = self._read_colmap_cameras()
         if self._dataset_params.is_eval:
-            if len(cameras) == 1:
+            if len(self._camera_index_set) == 1:
                 logging.warning("Only one camera found. No train/test split will be performed.")
                 self._train_cameras = cameras
                 self._test_cameras = list[Camera]()
