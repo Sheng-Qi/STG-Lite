@@ -285,8 +285,7 @@ class BasicColmapDataset(AbstractDataset):
     def _get_camera_index(self, image_name: str) -> int:
         matches = [
             re.search(r"cam(\d+)[/_.]", image_name),
-            re.search(r"(\d+)/(\d+)", image_name),
-            re.search(r"(\d+)[/_.]", image_name),
+            re.search(r"(\d+)/(\d+)", image_name)
         ]
         for match in matches:
             if match:
