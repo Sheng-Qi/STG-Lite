@@ -61,7 +61,7 @@ class SchedulerLearningRateParams(BaseModel):
     @classmethod
     def set_default_delay_steps(cls, value, info: ValidationInfo):
         if value is None:
-            return max(0, min(info.context.camera_count, 100))
+            return max(100, info.context.camera_count)
         return value
 
 
@@ -81,14 +81,14 @@ class IterationParamsMixin(BaseModel):
     @classmethod
     def set_default_start(cls, value, info: ValidationInfo):
         if value is None:
-            return max(0, min(info.context.camera_count, 1000) * 2)
+            return max(2000, info.context.camera_count * 2)
         return value
 
     @field_validator("step", mode="before")
     @classmethod
     def set_default_step(cls, value, info: ValidationInfo):
         if value is None:
-            return max(1, min(info.context.camera_count, 1000))
+            return max(1000, info.context.camera_count)
         return value
 
     @field_validator("end", mode="before")
@@ -112,14 +112,14 @@ class DensityControlParams(IterationParamsMixin):
     def set_default_start(cls, value, info: ValidationInfo):
         if value is None:
             # Avoid density control conflicts with prune points
-            return max(0, min(info.context.camera_count, 1000) * 2 - 1)
+            return max(1999, info.context.camera_count * 2 - 1)
         return value
 
     @field_validator("step", mode="before")
     @classmethod
     def set_default_step(cls, value, info: ValidationInfo):
         if value is None:
-            return max(1, min(info.context.camera_id_count, 30) * 2)
+            return max(60, info.context.camera_id_count * 2)
         return value
 
 
@@ -136,7 +136,7 @@ class PrunePointsParams(IterationParamsMixin):
     @classmethod
     def set_default_step(cls, value, info: ValidationInfo):
         if value is None:
-            return max(1, min(info.context.camera_id_count, 30))
+            return max(30, info.context.camera_id_count, 30)
         return value
 
 

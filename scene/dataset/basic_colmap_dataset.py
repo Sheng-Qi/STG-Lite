@@ -290,7 +290,7 @@ class BasicColmapDataset(AbstractDataset):
         for match in matches:
             if match:
                 return int(match.group(1))
-        logging.warning(f"Camera index not found in image name: {image_name}. Defaulting to 0. You might need to set density control period manually.")
+        logging.debug(f"Camera index not found in image name: {image_name}. Defaulting to 0. You might need to set density control period manually.")
         return 0
 
     def _create_ply_from_colmap(self):
