@@ -286,11 +286,12 @@ class BasicColmapDataset(AbstractDataset):
         matches = [
             re.search(r"cam(\d+)[/_.]", image_name),
             re.search(r"(\d+)/(\d+)", image_name),
+            re.search(r"(\d+)[/_.]", image_name),
         ]
         for match in matches:
             if match:
                 return int(match.group(1))
-        logging.warning(f"Camera index not found in image name: {image_name}. Defaulting to 0")
+        logging.warning(f"Camera index not found in image name: {image_name}. Defaulting to 0. You might need to set density control period manually.")
         return 0
 
     def _create_ply_from_colmap(self):

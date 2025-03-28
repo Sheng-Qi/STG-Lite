@@ -61,7 +61,7 @@ class SchedulerLearningRateParams(BaseModel):
     @classmethod
     def set_default_delay_steps(cls, value, info: ValidationInfo):
         if value is None:
-            return max(0, info.context.camera_count)
+            return max(0, min(info.context.camera_count, 100))
         return value
 
 
@@ -81,14 +81,14 @@ class IterationParamsMixin(BaseModel):
     @classmethod
     def set_default_start(cls, value, info: ValidationInfo):
         if value is None:
-            return max(0, info.context.camera_count * 2)
+            return max(0, min(info.context.camera_count, 1000) * 2)
         return value
 
     @field_validator("step", mode="before")
     @classmethod
     def set_default_step(cls, value, info: ValidationInfo):
         if value is None:
-            return max(1, info.context.camera_count)
+            return max(1, min(info.context.camera_count, 1000))
         return value
 
     @field_validator("end", mode="before")
@@ -112,14 +112,14 @@ class DensityControlParams(IterationParamsMixin):
     def set_default_start(cls, value, info: ValidationInfo):
         if value is None:
             # Avoid density control conflicts with prune points
-            return max(0, info.context.camera_count * 2 - 1)
+            return max(0, min(info.context.camera_count, 1000) * 2 - 1)
         return value
 
     @field_validator("step", mode="before")
     @classmethod
     def set_default_step(cls, value, info: ValidationInfo):
         if value is None:
-            return max(1, info.context.camera_id_count * 2)
+            return max(1, min(info.context.camera_id_count, 30) * 2)
         return value
 
 
@@ -136,7 +136,7 @@ class PrunePointsParams(IterationParamsMixin):
     @classmethod
     def set_default_step(cls, value, info: ValidationInfo):
         if value is None:
-            return max(1, info.context.camera_id_count)
+            return max(1, min(info.context.camera_id_count, 30))
         return value
 
 
@@ -316,7 +316,7 @@ class BasicGaussianModel(AbstractModel):
             cov3D_precomp=None,
         )
 
-        if len() == 4:
+        if len(result) == 4:
             self._rendered_image, self._vspace_radii, self._rendered_depth, self._vspace_values = result
         elif len(result) == 3:
             self._rendered_image, self._vspace_radii, self._rendered_depth = result
@@ -784,6 +784,7 @@ class BasicGaussianModel(AbstractModel):
             logging.info(
                 f"Skipping pruning large points due to density control step {iteration}. Please make sure your prune points step is not in the same range as density control step."
             )
+            return
         else:
             mask_radii = self._vspace_radii > self._basic_params.prune_points.th_radii
 
