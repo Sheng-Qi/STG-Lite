@@ -124,7 +124,12 @@ class BasicColmapDataset(AbstractDataset):
     def _load_cameras(self):
         cameras = self._read_colmap_cameras()
         if self._dataset_params.is_eval:
-            self._train_cameras, self._test_cameras = self._train_test_split(cameras)
+            if len(cameras) == 1:
+                logging.warning("Only one camera found. No train/test split will be performed.")
+                self._train_cameras = cameras
+                self._test_cameras = list[Camera]()
+            else:
+                self._train_cameras, self._test_cameras = self._train_test_split(cameras)
         else:
             self._train_cameras = cameras
             self._test_cameras = list[Camera]()
@@ -285,7 +290,8 @@ class BasicColmapDataset(AbstractDataset):
         for match in matches:
             if match:
                 return int(match.group(1))
-        raise ValueError(f"No camera index found in {image_name}")
+        logging.warning(f"Camera index not found in image name: {image_name}. Defaulting to 0")
+        return 0
 
     def _create_ply_from_colmap(self):
         paths = ["0/points3D.bin", "0/points3D.txt", "points3D.bin", "points3D.txt"]
