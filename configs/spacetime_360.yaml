@@ -5,13 +5,13 @@ TRAINER:
   renderer: diff_gaussian_rasterization_ch3
   forward_renderer: forward_lite
   model_type: spacetime_360
-  model_path: output/spacetime_360__
+  model_path: output/spacetime_360_penalty
   load_iteration: null
   max_iterations: 30000
   saving_iterations: [200, 1700, 3000, 5000, 8000, 10000, 15000, 20000, 25000, 30000]
   trainer_seed: 0
   lambda_dssim: 0.2
-  method_mask_loss: cover
+  method_mask_loss: penalty
   parallel_load: false
   num_workers_load: 16
   model_params:
@@ -74,12 +74,12 @@ TRAINER:
         motion: 3.5
         omega: 0.0001
     static:
-      ply_path: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration/input_ply/static.ply
+      ply_path: /home/wsq/Data/SSD/ours/movingrig/data/v4/dynamic/camera_calibration/input_ply/static.ply
       border_control:
         method: simple
         th_convert: -1
   dataset_params:
-    source_path: /home/wsq/Data/SSD/ours/movingrig/data/v2/dynamic/camera_calibration
+    source_path: /home/wsq/Data/SSD/ours/movingrig/data/v4/dynamic/camera_calibration
     relative_mask_path: masks_foreground
     resolution_scale: 2.0
     is_eval: true

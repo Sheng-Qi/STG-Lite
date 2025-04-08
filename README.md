@@ -22,7 +22,7 @@ bash scripts/setup.sh
 Modify the configuration file `config/default.yaml` and run the following command:
 
 ```bash
-python main.py --config config/default.yaml --log INFO
+python main.py --config config/default.yaml
 ```
 
 ## Note

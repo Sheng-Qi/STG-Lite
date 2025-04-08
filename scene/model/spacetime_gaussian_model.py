@@ -187,6 +187,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             cov3D_precomp=None,
         )
 
+        assert len(result) == 3 + int(self._context.is_render_support_vspace), "Invalid result length"
         if len(result) == 4:
             self._rendered_image, self._vspace_radii, self._rendered_depth, self._vspace_values = result
         elif len(result) == 3:
@@ -706,3 +707,39 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             self._max_vtime_gradient = self._max_vtime_gradient[valid_point_mask]
             self._max_t_scale_active = self._max_t_scale_active[valid_point_mask]
         torch.cuda.empty_cache()
+
+    def _calculate_mask_penalty_loss(self, camera: Camera):
+        if not self._context.is_render_support_vspace:
+            self._vspace_values = camera.project_points(self.xyz)
+
+        vspace_values = self._vspace_values
+        N, _ = vspace_values.shape
+        penalty = torch.zeros(N, device=self.device)
+        W, H = camera.resized_width, camera.resized_height
+        in_bound_mask = (
+            (vspace_values[:, 0] >= 0)
+            & (vspace_values[:, 0] < W)
+            & (vspace_values[:, 1] >= 0)
+            & (vspace_values[:, 1] < H)
+        )
+        non_zero_mask = (vspace_values[:, 0] != 0) & (vspace_values[:, 1] != 0)
+        opacity_mask = (
+            self.opacity_activated_projected(camera.camera_info.timestamp_ratio)
+            > self._basic_params.prune_points.th_opacity
+        ).squeeze()
+
+        in_view_mask = torch.logical_and(
+            in_bound_mask, torch.logical_and(non_zero_mask, opacity_mask)
+        )
+        if in_view_mask.sum() == 0:
+            return torch.tensor(0.0, device=self.device)
+
+        x_int = vspace_values[in_view_mask, 0].long()
+        y_int = vspace_values[in_view_mask, 1].long()
+
+        distances = camera.mask_distance_map[y_int, x_int].float()
+        penalty[in_view_mask] = distances / torch.max(
+            torch.tensor([W, H], device=self.device)
+        )
+
+        return self._basic_params.lambda_mask * torch.mean(penalty)

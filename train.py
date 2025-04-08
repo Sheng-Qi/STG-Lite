@@ -15,7 +15,12 @@ from scene.cameras import Camera
 from scene.dataset import parse_dataset, DatasetNames
 from scene.model import parse_model, parse_cfg_args, ModelNames
 from utils.system_utils import searchForMaxIteration
-from utils.renderer_utils import parse_renderer, RendererNames, is_forward_only
+from utils.renderer_utils import (
+    parse_renderer,
+    RendererNames,
+    is_forward_only,
+    is_support_vspace,
+)
 from utils.camera_utils import camera_to_JSON
 from utils.loss_utils import get_loss, ssim
 
@@ -120,6 +125,7 @@ class Trainer:
             ),
             "max_iterations": self._trainer_params.max_iterations,
             "method_mask_loss": self._trainer_params.method_mask_loss,
+            "is_render_support_vspace": is_support_vspace(self._trainer_params.renderer),
         }
 
     def load_model(self):
@@ -178,7 +184,7 @@ class Trainer:
 
                 for _ in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Loading images"):
                     pass
-        
+
         if len(self._gaussians) == 0:
             raise ValueError("Need to load model before training")
         np.random.seed(self._trainer_params.trainer_seed)

@@ -192,7 +192,8 @@ class Spacetime360Model(SpacetimeGaussianModel):
             ),
             cov3D_precomp=None,
         )
-
+        
+        assert len(result) == 3 + int(self._context.is_render_support_vspace), "Invalid result length"
         if len(result) == 4:
             self._rendered_image, self._vspace_radii, self._rendered_depth, means2D = result
             self._vspace_values = means2D[: self.xyz.shape[0]]

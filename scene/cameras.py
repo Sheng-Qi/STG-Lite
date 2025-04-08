@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import os
+import cv2
 import logging
 from dataclasses import dataclass
 from PIL import Image
@@ -55,6 +56,7 @@ class Camera:
 
         self._image = None
         self._image_mask = None
+        self._mask_distance_map = None
         self._world_view_transform = None
         self._projection_matrix = None
         self._full_proj_transform = None
@@ -117,6 +119,21 @@ class Camera:
             return self._image_mask.to(self._device).float()
 
     @property
+    def mask_distance_map(self) -> torch.Tensor:
+        if self._image is None:
+            self._load_and_process_image()
+        if self._mask_distance_map is None:
+            if torch.sum(self.image_mask) == 0:
+                self._mask_distance_map = torch.zeros([self.resized_height, self.resized_width], device=self._device)
+            else:
+                mask_cv = (self.image_mask.cpu().squeeze().numpy() * 255).astype(np.uint8)
+                mask_distance_map = cv2.distanceTransform(
+                    255 - mask_cv, cv2.DIST_L1, 5, dstType=cv2.CV_32F
+                )
+                self._mask_distance_map = torch.from_numpy(mask_distance_map).to(self._device)
+        return self._mask_distance_map.to(self._device).float()
+
+    @property
     def world_view_transform(self) -> torch.Tensor:
         if self._world_view_transform is None:
             self._pre_calculate_matrix()
@@ -155,6 +172,27 @@ class Camera:
         )  # shape: [N, 3]
         valid_depth = cam_coords[:, 2] > 0
         return in_bounds & valid_depth
+
+    def project_points(self, xyzs: torch.Tensor) -> torch.Tensor:
+        """
+        将3D点投影到图像平面上。注意：若点在图像外，则返回的坐标为(0, 0)。
+        Args:
+            xyzs (torch.Tensor): 3D点的坐标，形状为 [N, 3]。
+        Returns:
+            torch.Tensor: 投影到图像平面的2D点坐标，形状为 [N, 2]。
+        """
+        projected = geom_transform_points(xyzs, self.full_proj_transform)  # [N, 3]
+        valid_mask = projected[:, 2] > 0
+        x_pixel = torch.zeros(xyzs.shape[0], device=xyzs.device)
+        y_pixel = torch.zeros(xyzs.shape[0], device=xyzs.device)
+        if valid_mask.any():
+            x = (projected[valid_mask, 0] / projected[valid_mask, 2]) * 0.5 + 0.5
+            y = (projected[valid_mask, 1] / projected[valid_mask, 2]) * 0.5 + 0.5
+
+            x_pixel[valid_mask] = x * self.resized_width
+            y_pixel[valid_mask] = y * self.resized_height
+
+        return torch.stack([x_pixel, y_pixel], dim=-1)
 
     def load(self):
         if self._image is None:
