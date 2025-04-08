@@ -34,6 +34,8 @@ class BasicGaussianModelContext(BaseModel):
     camera_id_count: int = Field(..., gt=0)
     max_iterations: int = Field(..., gt=0)
     method_mask_loss: Literal["none", "cover", "penalty"]
+    is_render_support_vspace: bool
+
 
 class SchedulerLearningRateParams(BaseModel):
     init: float = Field(..., gt=0)
@@ -316,8 +318,14 @@ class BasicGaussianModel(AbstractModel):
             cov3D_precomp=None,
         )
 
+        assert len(result) == 3 + int(self._context.is_render_support_vspace), "Invalid result length"
         if len(result) == 4:
-            self._rendered_image, self._vspace_radii, self._rendered_depth, self._vspace_values = result
+            (
+                self._rendered_image,
+                self._vspace_radii,
+                self._rendered_depth,
+                self._vspace_values,
+            ) = result
         elif len(result) == 3:
             self._rendered_image, self._vspace_radii, self._rendered_depth = result
         else:
@@ -499,7 +507,9 @@ class BasicGaussianModel(AbstractModel):
     def _init_color_transform_model(self):
         if self._basic_params.color_transform.model_path_prior is None:
             return
-        self._load_color_transform_model(self._basic_params.color_transform.model_path_prior)
+        self._load_color_transform_model(
+            self._basic_params.color_transform.model_path_prior
+        )
 
     def _fetch_color_transform_model(self, pcd_path: str):
         if self._basic_params.color_transform.model_path_prior is None:
@@ -515,9 +525,7 @@ class BasicGaussianModel(AbstractModel):
             for matrix_param in self.__color_transformation_matrix_dict.values():
                 matrix_param.to(self.device)
         else:
-            logging.warning(
-                f"Color transformation matrix model not found at {path}"
-            )
+            logging.warning(f"Color transformation matrix model not found at {path}")
 
     def _apply_color_transformation(
         self, camera: Camera, image: torch.Tensor
@@ -822,48 +830,30 @@ class BasicGaussianModel(AbstractModel):
 
         torch.cuda.empty_cache()
 
-    def _calculate_mask_penalty_loss(self, camera):
-        vspace_values = self._vspace_values.to(self.device)
-        image_mask = camera.image_mask.squeeze(0).to(self.device)
+    def _calculate_mask_penalty_loss(self, camera: Camera):
+        if not self._context.is_render_support_vspace:
+            self._vspace_values = camera.project_points(self.xyz)
+
+        vspace_values = self._vspace_values
         N, _ = vspace_values.shape
         penalty = torch.zeros(N, device=self.device)
-
-        skip_mask = (
-            (vspace_values[:, 0] == 0)
-            & (vspace_values[:, 1] == 0)
-            & (
-                self.opacity_activated.squeeze()
-                < self._basic_params.prune_points.th_opacity
-            )
+        W, H = camera.resized_width, camera.resized_height
+        in_bound_mask = (
+            (vspace_values[:, 0] >= 0)
+            & (vspace_values[:, 0] < W)
+            & (vspace_values[:, 1] >= 0)
+            & (vspace_values[:, 1] < H)
         )
-        non_skip_indices = (~skip_mask).nonzero(as_tuple=True)[0]
+        non_zero_mask = (vspace_values[:, 0] != 0) & (vspace_values[:, 1] != 0)
+        
+        in_view_mask = torch.logical_and(in_bound_mask, non_zero_mask)
+        if in_view_mask.sum() == 0:
+            return torch.tensor(0.0, device=self.device)
 
-        if len(non_skip_indices) == 0:
-            return 0.0
-
-        H, W = image_mask.shape[:2]
-        basic_penalty_pixel = torch.log(
-            torch.max(torch.tensor([H, W], device=self.device)) + 1
-        )
-
-        x_int = vspace_values[non_skip_indices, 0].long()
-        y_int = vspace_values[non_skip_indices, 1].long()
-
-        outside_mask = (x_int < 0) | (x_int >= W) | (y_int < 0) | (y_int >= H)
-        penalty[non_skip_indices[outside_mask]] = basic_penalty_pixel
-
-        inside_mask = ~outside_mask
-        inside_vals = image_mask[y_int[inside_mask], x_int[inside_mask]]
-        zero_mask = torch.zeros(len(non_skip_indices), dtype=torch.bool, device=self.device)
-        zero_mask[inside_mask] = inside_vals == 0
-
-        non_zero_coords = torch.nonzero(image_mask).float().to(self.device)
-        if non_zero_coords.numel() > 0:
-            distances = torch.cdist(vspace_values[non_skip_indices], non_zero_coords)
-            min_distances = distances.min(dim=1).values
-            penalty_value = torch.log(min_distances + 1)
-            penalty[non_skip_indices[zero_mask]] = penalty_value[zero_mask]
-        else:
-            penalty[non_skip_indices[zero_mask]] = basic_penalty_pixel
+        x_int = vspace_values[in_view_mask, 0].long()
+        y_int = vspace_values[in_view_mask, 1].long()
+        
+        distances = camera.mask_distance_map[y_int, x_int].float()
+        penalty[in_view_mask] = distances / torch.max(torch.tensor([W, H], device=self.device))
 
         return self._basic_params.lambda_mask * torch.mean(penalty)

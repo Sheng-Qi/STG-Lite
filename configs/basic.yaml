@@ -60,7 +60,7 @@ TRAINER:
       opacity: 0.05
       features_dc: 0.0025
   dataset_params:
-    source_path: /home/wsq/Data/SSD/ours/movingrig/data/v2/static/camera_calibration
+    source_path: /home/wsq/Data/SSD/ours/movingrig/data/v4/static/camera_calibration
     relative_mask_path: null
     resolution_scale: 2.0
     is_eval: true
