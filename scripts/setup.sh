@@ -6,7 +6,7 @@ conda activate stg-lite
 conda install cudatoolkit=11.8
 
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip3 install pyyaml tqdm plyfile kornia opencv-python pydantic
+pip3 install pyyaml tqdm plyfile kornia opencv-python pydantic lpips
 
 pip3 install submodules/diff-gaussian-rasterization/
 pip3 install submodules/forward_lite

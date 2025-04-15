@@ -22,7 +22,8 @@ from utils.renderer_utils import (
     is_support_vspace,
 )
 from utils.camera_utils import camera_to_JSON
-from utils.loss_utils import get_loss, ssim
+from utils.loss_utils import get_loss, ssim, l1_loss, psnr
+from lpips import LPIPS
 
 
 class TrainerParams(BaseModel):
@@ -91,6 +92,8 @@ class Trainer:
             self._trainer_params.model_params, self._model_context
         )
 
+        self.__lpips_alex = LPIPS(net="alex").to(self._device)
+        self.__lpips_vgg = LPIPS(net="vgg").to(self._device)
         self.__progress_bar = None
         self.__ema_loss_for_log = None
 
@@ -125,7 +128,9 @@ class Trainer:
             ),
             "max_iterations": self._trainer_params.max_iterations,
             "method_mask_loss": self._trainer_params.method_mask_loss,
-            "is_render_support_vspace": is_support_vspace(self._trainer_params.renderer),
+            "is_render_support_vspace": is_support_vspace(
+                self._trainer_params.renderer
+            ),
         }
 
     def load_model(self):
@@ -182,7 +187,11 @@ class Trainer:
                 for camera in self._dataset.train_cameras:
                     futures.append(executor.submit(camera.load))
 
-                for _ in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Loading images"):
+                for _ in tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="Loading images",
+                ):
                     pass
 
         if len(self._gaussians) == 0:
@@ -269,16 +278,58 @@ class Trainer:
                     )
         self.__progress_bar.close()
 
-    def eval_model(self):
+    def eval_model(self, eval_option: str):
         if len(self._gaussians) == 0:
             raise ValueError("Need to load model before evaluation")
+
         if len(self._dataset.test_cameras) == 0:
-            raise ValueError("No test cameras in dataset, please set is_eval to True")
-        ssim_sum = 0.0
+            eval_option = "train"
+
+        train_results = {}
+        test_results = {}
+
         with torch.no_grad():
-            for test_camera in self._dataset.test_cameras:
-                ssim_sum += self.test_model(test_camera, None)
-        logging.info(f"SSIM: {ssim_sum / len(self._dataset.test_cameras)}")
+            if eval_option in ["all", "test"]:
+                for test_cam in self._dataset.test_cameras:
+                    results = self.test_model(test_cam, None)
+                    test_results[test_cam.camera_info.image_name] = {
+                        "l1": results[0],
+                        "psnr": results[1],
+                        "dssim": results[2],
+                        "ssim": results[3],
+                        "lpips_alex": results[4],
+                        "lpips_vgg": results[5],
+                    }
+                avgs_test = self.__compute_avgs(test_results)
+                self.__write_json(
+                    avgs_test,
+                    os.path.join(self._trainer_params.model_path, "test_avgs.json"),
+                )
+                self.__write_json(
+                    test_results,
+                    os.path.join(self._trainer_params.model_path, "test_results.json"),
+                )
+
+            if eval_option in ["all", "train"]:
+                for train_cam in self._dataset.train_cameras:
+                    results = self.test_model(train_cam, None)
+                    train_results[train_cam.camera_info.image_name] = {
+                        "l1": results[0],
+                        "psnr": results[1],
+                        "dssim": results[2],
+                        "ssim": results[3],
+                        "lpips_alex": results[4],
+                        "lpips_vgg": results[5],
+                    }
+                avgs_train = self.__compute_avgs(train_results)
+                self.__write_json(
+                    avgs_train,
+                    os.path.join(self._trainer_params.model_path, "train_avgs.json"),
+                )
+                self.__write_json(
+                    train_results,
+                    os.path.join(self._trainer_params.model_path, "train_results.json"),
+                )
 
     def test_model(self, camera: Camera, save_path: str) -> float:
         if len(self._gaussians) == 0:
@@ -302,10 +353,33 @@ class Trainer:
             if save_path is None
             else save_path
         )
-        ssim_loss = ssim(render_pkgs["rendered_image"], camera.image)
+        l1_value = l1_loss(render_pkgs["rendered_image"], camera.image).item()
+        psnr_value = psnr(render_pkgs["rendered_image"], camera.image).item()
+        ssim_value = ssim(render_pkgs["rendered_image"], camera.image).item()
+        dssim_value = (1 - ssim_value) / 2
+        lpips_alex_value = self.__lpips_alex(
+            render_pkgs["rendered_image"], camera.image
+        ).item()
+        lpips_vgg_value = self.__lpips_vgg(
+            render_pkgs["rendered_image"], camera.image
+        ).item()
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         torchvision.utils.save_image(render_pkgs["rendered_image"], save_path)
-        return ssim_loss
+        return l1_value, psnr_value, dssim_value, ssim_value, lpips_alex_value, lpips_vgg_value
+
+    def __compute_avgs(self, results_dict):
+        return {
+            "l1": np.mean([res["l1"] for res in results_dict.values()]),
+            "psnr": np.mean([res["psnr"] for res in results_dict.values()]),
+            "dssim": np.mean([res["dssim"] for res in results_dict.values()]),
+            "ssim": np.mean([res["ssim"] for res in results_dict.values()]),
+            "lpips_alex": np.mean([res["lpips_alex"] for res in results_dict.values()]),
+            "lpips_vgg": np.mean([res["lpips_vgg"] for res in results_dict.values()]),
+        }
+
+    def __write_json(self, data, filename):
+        with open(filename, "w") as file:
+            json.dump(data, file, indent=2)
 
 
 if __name__ == "__main__":
@@ -313,6 +387,8 @@ if __name__ == "__main__":
     arg_parser.add_argument("--config", type=str, default="configs/default.yaml")
     arg_parser.add_argument("--skip_train", action="store_false", dest="train")
     arg_parser.add_argument("--skip_eval", action="store_false", dest="eval")
+    arg_parser.add_argument("--eval_option", type=str, default="all",
+                            choices=["all", "train", "test"])
     args = arg_parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -320,9 +396,11 @@ if __name__ == "__main__":
         model_path = config["TRAINER"]["model_path"]
         os.makedirs(model_path, exist_ok=True)
         shutil.copy(args.config, os.path.join(model_path, "config.yaml"))
+    if not args.train:
+        config["TRAINER"]["load_iteration"] = -1
     trainer = Trainer(config["TRAINER"])
     trainer.load_model()
     if args.train:
         trainer.train_model()
     if args.eval:
-        trainer.eval_model()
+        trainer.eval_model(args.eval_option)

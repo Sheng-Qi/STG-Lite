@@ -25,6 +25,11 @@ def get_loss(image_1, image_2, lambda_dssim):
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
+def psnr(network_output, gt):
+    mse = ((network_output - gt) ** 2).mean()
+    if mse == 0:
+        return float("inf")
+    return 10 * torch.log10(1 / mse)
 
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()

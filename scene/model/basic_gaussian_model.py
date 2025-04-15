@@ -525,7 +525,7 @@ class BasicGaussianModel(AbstractModel):
         )
 
     def _fetch_color_transform_model(self, pcd_path: str):
-        if self._basic_params.color_transform.model_path_prior is None:
+        if self._basic_params.color_transform.model_path_prior is not None:
             path = self._basic_params.color_transform.model_path_prior
         else:
             path = pcd_path.replace(".ply", "_color_transform_matrix.pth")
