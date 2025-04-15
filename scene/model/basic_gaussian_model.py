@@ -246,7 +246,7 @@ class BasicGaussianModel(AbstractModel):
         return self.__features_dc
 
     def init(self, dataset: AbstractDataset):
-        self._init_point_cloud_parameters(dataset.ply_data)
+        self._init_point_cloud_parameters(dataset)
 
         if self._basic_params.color_transform.enable:
             self._init_color_transform_model()
@@ -318,7 +318,9 @@ class BasicGaussianModel(AbstractModel):
             cov3D_precomp=None,
         )
 
-        assert len(result) == 3 + int(self._context.is_render_support_vspace), "Invalid result length"
+        assert len(result) == 3 + int(
+            self._context.is_render_support_vspace
+        ), "Invalid result length"
         if len(result) == 4:
             (
                 self._rendered_image,
@@ -374,38 +376,49 @@ class BasicGaussianModel(AbstractModel):
         self.__opacity = param_dict["opacity"]
         self.__features_dc = param_dict["features_dc"]
 
-    def _init_point_cloud_parameters(self, pcd_data: BasicPointCloud):
-        point_cloud = torch.tensor(np.asarray(pcd_data.points)).float().to(self.device)
+    def _init_point_cloud_parameters(self, dataset: AbstractDataset):
+        pcd_data = dataset.ply_data
+        xyzs = torch.tensor(np.asarray(pcd_data.points)).float().to(self.device)
         color = torch.tensor(np.asarray(pcd_data.colors)).float().to(self.device)
 
-        dist2 = torch.clamp_min(
-            distCUDA2(
-                torch.from_numpy(np.asarray(pcd_data.points)).float().to(self.device)
-            ),
-            0.0000001,
-        )
+        pcd_masks = torch.zeros(xyzs.shape[0], dtype=torch.bool, device=self.device)
+        cameras = dataset.train_cameras + dataset.test_cameras
+        for camera in cameras:
+            pcd_masks = torch.logical_or(
+                pcd_masks,
+                camera.get_near_mask(
+                    torch.tensor(dataset.ply_data.points, device=self.device)
+                ),
+            )
+        prune_mask = ~pcd_masks
+        xyzs = xyzs[prune_mask]
+        color = color[prune_mask]
+
+        dist2 = torch.clamp_min(distCUDA2(xyzs), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
         scales = torch.clamp(scales, -10, 1.0)
 
-        rots = torch.zeros((point_cloud.shape[0], 4), device=self.device)
+        rots = torch.zeros((xyzs.shape[0], 4), device=self.device)
         rots[:, 0] = 1
 
         opactities = inverse_sigmoid(
             0.1
             * torch.ones(
-                (point_cloud.shape[0], 1), dtype=torch.float, device=self.device
+                (xyzs.shape[0], 1), dtype=torch.float, device=self.device
             )
         )
 
         self._set_gaussian_attributes(
             {
-                "xyz": nn.Parameter(point_cloud.contiguous().requires_grad_(True)),
+                "xyz": nn.Parameter(xyzs.contiguous().requires_grad_(True)),
                 "xyz_scales": nn.Parameter(scales.requires_grad_(True)),
                 "rotation": nn.Parameter(rots.requires_grad_(True)),
                 "opacity": nn.Parameter(opactities.requires_grad_(True)),
                 "features_dc": nn.Parameter(color.contiguous().requires_grad_(True)),
             }
         )
+
+        return prune_mask
 
     def _fetch_point_cloud_parameters(self, ply_data: PlyData, is_sh: bool = True):
         xyz_names = ["x", "y", "z"]
@@ -845,15 +858,17 @@ class BasicGaussianModel(AbstractModel):
             & (vspace_values[:, 1] < H)
         )
         non_zero_mask = (vspace_values[:, 0] != 0) & (vspace_values[:, 1] != 0)
-        
+
         in_view_mask = torch.logical_and(in_bound_mask, non_zero_mask)
         if in_view_mask.sum() == 0:
             return torch.tensor(0.0, device=self.device)
 
         x_int = vspace_values[in_view_mask, 0].long()
         y_int = vspace_values[in_view_mask, 1].long()
-        
+
         distances = camera.mask_distance_map[y_int, x_int].float()
-        penalty[in_view_mask] = distances / torch.max(torch.tensor([W, H], device=self.device))
+        penalty[in_view_mask] = distances / torch.max(
+            torch.tensor([W, H], device=self.device)
+        )
 
         return self._basic_params.lambda_mask * torch.mean(penalty)

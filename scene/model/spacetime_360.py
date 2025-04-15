@@ -192,7 +192,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             ),
             cov3D_precomp=None,
         )
-        
+
         assert len(result) == 3 + int(self._context.is_render_support_vspace), "Invalid result length"
         if len(result) == 4:
             self._rendered_image, self._vspace_radii, self._rendered_depth, means2D = result
@@ -351,9 +351,9 @@ class Spacetime360Model(SpacetimeGaussianModel):
         self.__static_features_dc = param_dict["features_dc"]
         self._update_in_image_counts()
 
-    def _init_point_cloud_parameters(self, pcd_data):
+    def _init_point_cloud_parameters(self, dataset):
         self._load_static_point_cloud()
-        super()._init_point_cloud_parameters(pcd_data)
+        return super()._init_point_cloud_parameters(dataset)
 
     def _fetch_point_cloud_parameters(self, ply_data, is_sh=False):
         self._load_static_point_cloud()

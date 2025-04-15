@@ -93,6 +93,10 @@ class Camera:
     @property
     def resized_height(self) -> int:
         return self.resized_resolution[1]
+    
+    @property
+    def resize_max_dim(self) -> int:
+        return max(self.resized_resolution)
 
     @property
     def camera_info(self) -> CameraInfo:
@@ -124,13 +128,19 @@ class Camera:
             self._load_and_process_image()
         if self._mask_distance_map is None:
             if torch.sum(self.image_mask) == 0:
-                self._mask_distance_map = torch.zeros([self.resized_height, self.resized_width], device=self._device)
+                self._mask_distance_map = torch.zeros(
+                    [self.resized_height, self.resized_width], device=self._device
+                )
             else:
-                mask_cv = (self.image_mask.cpu().squeeze().numpy() * 255).astype(np.uint8)
+                mask_cv = (self.image_mask.cpu().squeeze().numpy() * 255).astype(
+                    np.uint8
+                )
                 mask_distance_map = cv2.distanceTransform(
                     255 - mask_cv, cv2.DIST_L1, 5, dstType=cv2.CV_32F
                 )
-                self._mask_distance_map = torch.from_numpy(mask_distance_map).to(self._device)
+                self._mask_distance_map = torch.from_numpy(mask_distance_map).to(
+                    self._device
+                )
         return self._mask_distance_map.to(self._device).float()
 
     @property
@@ -156,6 +166,12 @@ class Camera:
         if self._camera_center is None:
             self._pre_calculate_matrix()
         return self._camera_center
+
+    def get_near_mask(self, xyzs: torch.Tensor) -> torch.Tensor:
+        cam_coords = geom_transform_points(xyzs, self.world_view_transform)
+        valid_depth = cam_coords[:, 2] >= 0
+        near_mask = cam_coords[:, 2] < self._camera_info.near
+        return valid_depth & near_mask
 
     def check_in_image(self, xyzs: torch.Tensor) -> torch.Tensor:
         projected = geom_transform_points(

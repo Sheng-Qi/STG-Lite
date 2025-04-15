@@ -297,9 +297,10 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         self._set_gaussian_attributes(param_dict)
         self._set_gaussian_attributes_time(param_dict)
 
-    def _init_point_cloud_parameters(self, pcd_data: BasicPointCloud):
-        super()._init_point_cloud_parameters(pcd_data)
-        times = torch.tensor(np.asarray(pcd_data.times)).float().to(self._device)
+    def _init_point_cloud_parameters(self, dataset: AbstractDataset):
+        mask = super()._init_point_cloud_parameters(dataset)
+        times = torch.tensor(np.asarray(dataset.ply_data.times)).float().to(self._device)
+        times = times[mask]
         param_dict = {
             "t": nn.Parameter(times.contiguous().requires_grad_(True)),
             "t_scale": nn.Parameter(
@@ -324,6 +325,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             ),
         }
         self._set_gaussian_attributes_time(param_dict)
+        return mask
 
     def _fetch_point_cloud_parameters(self, ply_data: PlyData, is_sh: bool = False):
         super()._fetch_point_cloud_parameters(ply_data, is_sh)
