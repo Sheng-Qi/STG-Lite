@@ -70,11 +70,18 @@ class TechnicolorDataset(BasicColmapDataset):
             ),
             desc="Reading cameras progress",
         ):
-            subfolder_path = os.path.join(
-                self._dataset_params.source_path, f"colmap_{time}"
-            )
-            if not os.path.exists(subfolder_path):
-                raise FileNotFoundError(f"Colmap folder not found at {subfolder_path}")
+            all_subfolders = os.listdir(self._dataset_params.source_path)
+            subfolder_path = None
+            for subfolder in all_subfolders:
+                if re.match(r"colmap_0*{}$".format(time), subfolder):
+                    subfolder_path = os.path.join(
+                        self._dataset_params.source_path, subfolder
+                    )
+                    break
+            if subfolder_path is None:
+                raise FileNotFoundError(
+                    f"Colmap folder not found at time {time}"
+                )
 
             cam_extrinsics, cam_intrinsics = self._find_and_read_colmap_files(
                 subfolder_path
@@ -159,30 +166,42 @@ class TechnicolorDataset(BasicColmapDataset):
             self._time_params.start_frame,
             self._time_params.start_frame + self._time_params.duration,
         ):
+            all_subfolders = os.listdir(self._dataset_params.source_path)
+            subfolder_path = None
+            for subfolder in all_subfolders:
+                if re.match(r"colmap_0*{}$".format(time), subfolder):
+                    subfolder_path = os.path.join(
+                        self._dataset_params.source_path, subfolder
+                    )
+                    break
+            if subfolder_path is None:
+                raise FileNotFoundError(
+                    f"Colmap folder not found at time {time}"
+                )
             paths = [
                 os.path.join(
                     self._dataset_params.source_path,
-                    f"colmap_{time}",
+                    subfolder_path,
                     "sparse",
                     "0",
                     "points3D.bin",
                 ),
                 os.path.join(
                     self._dataset_params.source_path,
-                    f"colmap_{time}",
+                    subfolder_path,
                     "sparse",
                     "0",
                     "points3D.txt",
                 ),
                 os.path.join(
                     self._dataset_params.source_path,
-                    f"colmap_{time}",
+                    subfolder_path,
                     "sparse",
                     "points3D.bin",
                 ),
                 os.path.join(
                     self._dataset_params.source_path,
-                    f"colmap_{time}",
+                    subfolder_path,
                     "sparse",
                     "points3D.txt",
                 ),

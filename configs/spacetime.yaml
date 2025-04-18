@@ -74,7 +74,7 @@ TRAINER:
         motion: 3.5
         omega: 0.0001
   dataset_params:
-    source_path: /home/wsq/Data/SSD/ours/movingrig/data/v4/dynamic/camera_calibration
+    source_path: /data/shareddataset/google_immersive/calib/02_Flames_undist
     relative_mask_path: null
     resolution_scale: 2.0
     is_eval: true
