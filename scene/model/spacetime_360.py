@@ -152,6 +152,8 @@ class Spacetime360Model(SpacetimeGaussianModel):
             sh_degree=0,
             campos=camera.camera_center,
             prefiltered=False,
+            antialiasing=False,
+            debug=False,
         )
         rasterizer = GRzer(raster_settings=raster_settings)
 

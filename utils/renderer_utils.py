@@ -3,14 +3,12 @@ from typing import Literal
 
 RendererNames = Literal[
     "diff_gaussian_rasterization",
-    "diff_gaussian_rasterization_ch3",
     "diff_gaussian_rasterization_custom",
     "forward_lite",
 ]
 
 __RENDERER_ATTRIBUTES = {
     "diff_gaussian_rasterization": {"forward_only": False, "support_vspace": False},
-    "diff_gaussian_rasterization_ch3": {"forward_only": False, "support_vspace": False},
     "diff_gaussian_rasterization_custom": {
         "forward_only": False,
         "support_vspace": True,

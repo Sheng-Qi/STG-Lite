@@ -2,7 +2,7 @@ TRAINER:
   debug: false
   device: cuda
   dataset_type: technicolor
-  renderer: diff_gaussian_rasterization_ch3
+  renderer: diff_gaussian_rasterization
   forward_renderer: forward_lite
   model_type: spacetime_360
   model_path: output/spacetime_360
