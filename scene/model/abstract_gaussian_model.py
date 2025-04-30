@@ -18,6 +18,11 @@ class AbstractModel:
     @abstractmethod
     def device(self) -> torch.device:
         pass
+    
+    @property
+    @abstractmethod
+    def sh_degree(self) -> int:
+        pass
 
     @property
     @abstractmethod
@@ -52,6 +57,10 @@ class AbstractModel:
     def get_regularization_loss(
         self, camera: Camera, dataset: AbstractDataset
     ) -> torch.Tensor:
+        pass
+    
+    @abstractmethod
+    def one_up_sh_degree(self):
         pass
 
     @abstractmethod

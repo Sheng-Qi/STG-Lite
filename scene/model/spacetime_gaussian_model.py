@@ -159,7 +159,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             scale_modifier=1.0,
             viewmatrix=camera.world_view_transform,
             projmatrix=camera.full_proj_transform,
-            sh_degree=0,
+            sh_degree=self._active_sh_degree,
             campos=camera.camera_center,
             prefiltered=False,
             antialiasing=False,
@@ -181,8 +181,8 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         result = rasterizer(
             means3D=self.xyz_projected(delta_t),
             means2D=self._vspace_points,
-            shs=None,
-            colors_precomp=self.features_dc,
+            shs=self.features,
+            colors_precomp=None,
             opacities=self.opacity_activated_projected(delta_t),
             scales=self.xyz_scales_activated,
             rotations=self.rotation_activated_projected(delta_t),
@@ -224,7 +224,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             scale_modifier=1.0,
             viewmatrix=camera.world_view_transform,
             projmatrix=camera.full_proj_transform,
-            sh_degree=0,
+            sh_degree=self._active_sh_degree,
             campos=camera.camera_center,
             prefiltered=False,
             debug=False,
@@ -247,8 +247,8 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             motion=self.motion_full_degree,
             means3D=self.xyz,
             means2D=screenspace_points,
-            shs=None,
-            colors_precomp=self.features_dc,
+            shs=self.features,
+            colors_precomp=None,
             opacities=self.opacity_activated,
             scales=self.xyz_scales_activated,
             rotations=self.rotation_activated_projected(delta_t),
@@ -329,8 +329,8 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         self._set_gaussian_attributes_time(param_dict)
         return mask
 
-    def _fetch_point_cloud_parameters(self, ply_data: PlyData, is_sh: bool = False):
-        super()._fetch_point_cloud_parameters(ply_data, is_sh)
+    def _fetch_point_cloud_parameters(self, ply_data: PlyData):
+        super()._fetch_point_cloud_parameters(ply_data)
 
         t_names = ["trbf_center"]
         t_scale_names = ["trbf_scale"]
@@ -353,7 +353,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             [np.asarray(ply_data.elements[0][name]) for name in omega_names], axis=1
         )
 
-        self._param_dict = {
+        _param_dict = {
             "t": nn.Parameter(
                 torch.tensor(t, dtype=torch.float, device=self._device).requires_grad_(
                     True
@@ -375,6 +375,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 ).requires_grad_(True)
             ),
         }
+        self._set_gaussian_attributes_time(_param_dict)
 
     def _save_point_cloud_parameters(self, pcd_path):
         os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
@@ -384,7 +385,16 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         trbf_scale = self.t_scale.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
         motion_full_degree = self.motion_full_degree.detach().cpu().numpy()
-        f_dc = self.features_dc.detach().cpu().numpy()
+        f_dc = (
+            self.features_dc.detach().transpose(1, 2).flatten(start_dim=1).cpu().numpy()
+        )
+        f_rest = (
+            self.features_rest.transpose(1, 2)
+            .flatten(start_dim=1)
+            .detach()
+            .cpu()
+            .numpy()
+        )
         opacity = self.opacity.detach().cpu().numpy()
         scale = self.xyz_scales.detach().cpu().numpy()
         rotation = self.rotation.detach().cpu().numpy()
@@ -397,6 +407,12 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         list_of_attributes.extend(["nx", "ny", "nz"])
         list_of_attributes.extend(["motion_" + str(i) for i in range(9)])
         list_of_attributes.extend(["f_dc_" + str(i) for i in range(3)])
+        list_of_attributes.extend(
+            [
+                "f_rest_" + str(i)
+                for i in range(3 * (self._basic_params.sh_degree + 1) ** 2 - 3)
+            ]
+        )
         list_of_attributes.extend(["opacity"])
         list_of_attributes.extend(["scale_" + str(i) for i in range(3)])
         list_of_attributes.extend(["rot_" + str(i) for i in range(4)])
@@ -413,6 +429,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 normals,
                 motion_full_degree,
                 f_dc,
+                f_rest,
                 opacity,
                 scale,
                 rotation,
@@ -563,7 +580,10 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             new_motion = self.motion[selected_mask].repeat(split_num, 1)
             new_omega = self.omega[selected_mask].repeat(split_num, 1)
             new_opacity = self.opacity[selected_mask].repeat(split_num, 1)
-            new_features_dc = self.features_dc[selected_mask].repeat(split_num, 1)
+            new_features_dc = self.features_dc[selected_mask].repeat(split_num, 1, 1)
+            new_features_rest = self.features_rest[selected_mask].repeat(
+                split_num, 1, 1
+            )
 
             stds = torch.exp(self.xyz_scales[selected_mask]).repeat(split_num, 1)
             means = torch.zeros((stds.size(0), 3), device=self._device)
@@ -625,6 +645,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
                 new_omega,
                 new_opacity,
                 new_features_dc,
+                new_features_rest,
             )
 
             self._init_density_control()
@@ -653,6 +674,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
         new_omega,
         new_opacity,
         new_features_dc,
+        new_features_rest,
     ):
         param_dict = {
             "xyz": new_xyz,
@@ -664,6 +686,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             "omega": new_omega,
             "opacity": new_opacity,
             "features_dc": new_features_dc,
+            "features_rest": new_features_rest,
         }
 
         optimizable_tensors = extend_param_group(self.optimizer, param_dict)
@@ -685,6 +708,7 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             "omega",
             "opacity",
             "features_dc",
+            "features_rest",
         ]
         param_dict = {param: valid_point_mask for param in param_list}
 

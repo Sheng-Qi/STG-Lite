@@ -14,11 +14,3 @@ def parse_model(model: ModelNames) -> Type[AbstractModel]:
     model_module = import_module("scene.model." + MODEL_DICT[model][0])
     return getattr(model_module, MODEL_DICT[model][1])
 
-
-def parse_cfg_args(model: ModelNames) -> str:
-    MODEL_DICT = {
-        "basic": "Namespace(sh_degree=0)",
-        "spacetime": "Namespace(sh_degree=3)",
-        "spacetime_360": "Namespace(sh_degree=3)",
-    }
-    return MODEL_DICT[model]

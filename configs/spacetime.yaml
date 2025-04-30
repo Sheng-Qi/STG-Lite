@@ -15,6 +15,7 @@ TRAINER:
   parallel_load: false
   num_workers_load: 16
   model_params:
+    sh_degree: 0
     lambda_mask: 0.001
     color_transform:
       enable: true
@@ -58,7 +59,7 @@ TRAINER:
       xyz_scales: 0.005
       rotation: 0.001
       opacity: 0.05
-      features_dc: 0.0025
+      features: 0.0025
     spacetime:
       t_scale_init: -2.0
       motion_degree: 3

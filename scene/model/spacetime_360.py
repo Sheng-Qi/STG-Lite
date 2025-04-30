@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, field_validator, ValidationInfo
 from scene.dataset.abstract_dataset import AbstractDataset
 from scene.model.spacetime_gaussian_model import SpacetimeGaussianModel
 from scene.cameras import Camera
-from utils.general_utils import SH2RGB
 
 
 class BorderControlParams(BaseModel):
@@ -55,6 +54,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
         self.__static_rotation: torch.Tensor = None
         self.__static_opacity: torch.Tensor = None
         self.__static_features_dc: torch.Tensor = None
+        self.__static_features_rest: torch.Tensor = None
         self.DUMMY_T: float = 0.5
         self.DUMMY_T_SCALE: float = 5.0
         self.DUMMY_T_SCALE_CONVERT: float = 0.0
@@ -92,6 +92,16 @@ class Spacetime360Model(SpacetimeGaussianModel):
     @property
     def static_features_dc(self):
         return self.__static_features_dc
+
+    @property
+    def static_features_rest(self):
+        return self.__static_features_rest
+
+    @property
+    def static_features(self):
+        return torch.cat(
+            (self.static_features_dc, self.static_features_rest), dim=1
+        )
 
     @property
     def in_image_counts(self):
@@ -149,7 +159,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             scale_modifier=1.0,
             viewmatrix=camera.world_view_transform,
             projmatrix=camera.full_proj_transform,
-            sh_degree=0,
+            sh_degree=self._active_sh_degree,
             campos=camera.camera_center,
             prefiltered=False,
             antialiasing=False,
@@ -171,10 +181,10 @@ class Spacetime360Model(SpacetimeGaussianModel):
         result = rasterizer(
             means3D=torch.cat((self.xyz_projected(delta_t), self.__static_xyz), dim=0),
             means2D=torch.cat((self._vspace_points, self._static_vspce_points), dim=0),
-            shs=None,
-            colors_precomp=torch.cat(
-                (self.features_dc, self.__static_features_dc), dim=0
+            shs=torch.cat(
+                (self.features, self.static_features), dim=0
             ),
+            colors_precomp=None,
             opacities=torch.cat(
                 (
                     self.opacity_activated_projected(delta_t),
@@ -238,7 +248,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             scale_modifier=1.0,
             viewmatrix=camera.world_view_transform,
             projmatrix=camera.full_proj_transform,
-            sh_degree=0,
+            sh_degree=self._active_sh_degree,
             campos=camera.camera_center,
             prefiltered=False,
             debug=False,
@@ -291,10 +301,10 @@ class Spacetime360Model(SpacetimeGaussianModel):
             ),
             means3D=torch.cat((self.xyz, self.static_xyz), dim=0),
             means2D=screenspace_points,
-            shs=None,
-            colors_precomp=torch.cat(
-                (self.features_dc, self.static_features_dc), dim=0
+            shs=torch.cat(
+                (self.features, self.static_features), dim=0
             ),
+            colors_precomp=None,
             opacities=torch.cat(
                 (
                     self.opacity_activated_projected(delta_t),
@@ -340,29 +350,29 @@ class Spacetime360Model(SpacetimeGaussianModel):
     def _set_static_gaussian_attributes(self, param_dict: dict):
         assert all(
             key in param_dict
-            for key in ["xyz", "xyz_scales", "rotation", "opacity", "features_dc"]
+            for key in ["xyz", "xyz_scales", "rotation", "opacity", "features_dc", "features_rest"]
         )
         assert all(
             param_dict["xyz"].shape[0] == param_dict[key].shape[0]
-            for key in ["xyz_scales", "rotation", "opacity", "features_dc"]
+            for key in ["xyz_scales", "rotation", "opacity", "features_dc", "features_rest"]
         )
         self.__static_xyz = param_dict["xyz"]
         self.__static_xyz_scales = param_dict["xyz_scales"]
         self.__static_rotation = param_dict["rotation"]
         self.__static_opacity = param_dict["opacity"]
         self.__static_features_dc = param_dict["features_dc"]
+        self.__static_features_rest = param_dict["features_rest"]
         self._update_in_image_counts()
 
     def _init_point_cloud_parameters(self, dataset):
         self._load_static_point_cloud()
         return super()._init_point_cloud_parameters(dataset)
 
-    def _fetch_point_cloud_parameters(self, ply_data, is_sh=False):
+    def _fetch_point_cloud_parameters(self, ply_data):
         self._load_static_point_cloud()
-        return super()._fetch_point_cloud_parameters(ply_data, is_sh)
+        return super()._fetch_point_cloud_parameters(ply_data)
 
-    def _load_static_point_cloud(self, is_sh: bool = True):
-
+    def _load_static_point_cloud(self):
         static_ply_path = self._static_params.ply_path
         ply_data = PlyData.read(static_ply_path)
 
@@ -370,7 +380,6 @@ class Spacetime360Model(SpacetimeGaussianModel):
         xyz_scales_names = ["scale_" + str(i) for i in range(3)]
         rotation_names = ["rot_" + str(i) for i in range(4)]
         opacity_names = ["opacity"]
-        features_dc_names = ["f_dc_" + str(i) for i in range(3)]
 
         xyz = np.stack(
             [np.asarray(ply_data.elements[0][name]) for name in xyz_names], axis=1
@@ -385,11 +394,29 @@ class Spacetime360Model(SpacetimeGaussianModel):
         opacity = np.stack(
             [np.asarray(ply_data.elements[0][name]) for name in opacity_names], axis=1
         )
-        features_dc = np.stack(
-            [np.asarray(ply_data.elements[0][name]) for name in features_dc_names],
-            axis=1,
+
+        features_dc = np.zeros((xyz.shape[0], 3, 1))
+        features_dc[:, 0, 0] = np.asarray(ply_data.elements[0]["f_dc_0"])
+        features_dc[:, 1, 0] = np.asarray(ply_data.elements[0]["f_dc_1"])
+        features_dc[:, 2, 0] = np.asarray(ply_data.elements[0]["f_dc_2"])
+        extra_f_names = [
+            p.name
+            for p in ply_data.elements[0].properties
+            if p.name.startswith("f_rest_")
+        ]
+        extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
+        if len(extra_f_names) != 3 * (self._basic_params.sh_degree + 1) ** 2 - 3:
+            raise ValueError(
+                f"Invalid number of extra features. Expected {3 * (self._basic_params.sh_degree + 1) ** 2 - 3}, got {len(extra_f_names)}"
+            )
+        features_rest = np.zeros((xyz.shape[0], len(extra_f_names)))
+        for i, name in enumerate(extra_f_names):
+            features_rest[:, i] = np.asarray(ply_data.elements[0][name])
+        features_rest = features_rest.reshape(
+            (features_rest.shape[0], 3, (self._basic_params.sh_degree + 1) ** 2 - 1)
         )
 
+        self._active_sh_degree = self._basic_params.sh_degree
         param_dict = {
             "xyz": torch.tensor(xyz, dtype=torch.float, device=self.device),
             "xyz_scales": torch.tensor(
@@ -398,10 +425,15 @@ class Spacetime360Model(SpacetimeGaussianModel):
             "rotation": torch.tensor(rotation, dtype=torch.float, device=self.device),
             "opacity": torch.tensor(opacity, dtype=torch.float, device=self.device),
             "features_dc": torch.tensor(
-                SH2RGB(features_dc) if is_sh else features_dc,
+                features_dc,
                 dtype=torch.float,
                 device=self.device,
-            ),
+            ).transpose(1, 2).contiguous(),
+            "features_rest": torch.tensor(
+                features_rest,
+                dtype=torch.float,
+                device=self.device,
+            ).transpose(1, 2).contiguous(),
         }
         self._set_static_gaussian_attributes(param_dict)
 
@@ -411,6 +443,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
         new_rotation = self.static_rotation[selected_mask]
         new_opacity = self.static_opacity[selected_mask]
         new_features_dc = self.static_features_dc[selected_mask]
+        new_features_rest = self.static_features_rest[selected_mask]
         new_t = torch.full(
             (new_xyz.shape[0], self.t.shape[1]),
             self.DUMMY_T,
@@ -441,6 +474,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             new_omega,
             new_opacity,
             new_features_dc,
+            new_features_rest,
         )
         static_params = {
             "xyz": self.static_xyz[~selected_mask],
@@ -448,6 +482,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
             "rotation": self.static_rotation[~selected_mask],
             "opacity": self.static_opacity[~selected_mask],
             "features_dc": self.static_features_dc[~selected_mask],
+            "features_rest": self.static_features_rest[~selected_mask],
         }
         self._set_static_gaussian_attributes(static_params)
 
@@ -490,8 +525,24 @@ class Spacetime360Model(SpacetimeGaussianModel):
             ]
         ).numpy()
         f_dc = torch.cat(
-            [self.features_dc.cpu().detach(), self.static_features_dc.cpu().detach()]
+            [
+                self.features_dc.cpu().detach().transpose(1, 2).flatten(start_dim=1),
+                self.static_features_dc.cpu()
+                .detach()
+                .transpose(1, 2)
+                .flatten(start_dim=1),
+            ]
         ).numpy()
+        f_rest = torch.cat(
+            [
+                self.features_rest.cpu().detach().transpose(1, 2).flatten(start_dim=1),
+                self.static_features_rest.cpu()
+                .detach()
+                .transpose(1, 2)
+                .flatten(start_dim=1),
+            ]
+        ).numpy()
+
         opacity = torch.cat(
             [self.opacity.cpu().detach(), self.static_opacity.cpu().detach()]
         ).numpy()
@@ -520,6 +571,12 @@ class Spacetime360Model(SpacetimeGaussianModel):
         list_of_attributes.extend(["nx", "ny", "nz"])
         list_of_attributes.extend(["motion_" + str(i) for i in range(9)])
         list_of_attributes.extend(["f_dc_" + str(i) for i in range(3)])
+        list_of_attributes.extend(
+            [
+                "f_rest_" + str(i)
+                for i in range(3 * (self._basic_params.sh_degree + 1) ** 2 - 3)
+            ]
+        )
         list_of_attributes.extend(["opacity"])
         list_of_attributes.extend(["scale_" + str(i) for i in range(3)])
         list_of_attributes.extend(["rot_" + str(i) for i in range(4)])
@@ -536,6 +593,7 @@ class Spacetime360Model(SpacetimeGaussianModel):
                 normals,
                 motion_full_degree,
                 f_dc,
+                f_rest,
                 opacity,
                 scale,
                 rotation,

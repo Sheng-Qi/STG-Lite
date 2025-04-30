@@ -15,10 +15,6 @@ from datetime import datetime
 import numpy as np
 import random
 
-def SH2RGB(sh):
-    C0 = 0.28209479177387814
-    return sh * C0 + 0.5
-
 def inverse_sigmoid(x):
     return torch.log(x / (1 - x))
 

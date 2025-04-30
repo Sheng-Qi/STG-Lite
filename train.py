@@ -13,7 +13,7 @@ import logging
 from pydantic import BaseModel, field_validator, Field
 from scene.cameras import Camera
 from scene.dataset import parse_dataset, DatasetNames
-from scene.model import parse_model, parse_cfg_args, ModelNames
+from scene.model import parse_model, ModelNames
 from utils.system_utils import searchForMaxIteration
 from utils.renderer_utils import (
     parse_renderer,
@@ -160,7 +160,7 @@ class Trainer:
             with open(
                 os.path.join(self._trainer_params.model_path, "cfg_args"), "w"
             ) as file:
-                file.write(parse_cfg_args(self._trainer_params.model_type))
+                file.write(f"Namespace(sh_degree={self.model.sh_degree})")
             self._gaussians.init(self._dataset)
         else:
             active_iteration = (
@@ -276,6 +276,8 @@ class Trainer:
                             "point_cloud.ply",
                         )
                     )
+                if (iteration % 1000) == 0:
+                    self._gaussians.one_up_sh_degree()
         self.__progress_bar.close()
 
     def eval_model(self, eval_option: str):
@@ -395,8 +397,9 @@ if __name__ == "__main__":
         config = yaml.safe_load(f)
         model_path = config["TRAINER"]["model_path"]
         os.makedirs(model_path, exist_ok=True)
-        shutil.copy(args.config, os.path.join(model_path, "config.yaml"))
-    if not args.train:
+        if os.path.abspath(args.config) != os.path.abspath(os.path.join(model_path, "config.yaml")):
+            shutil.copy(args.config, os.path.join(model_path, "config.yaml"))
+    if not args.train and not config["TRAINER"]["load_iteration"]:
         config["TRAINER"]["load_iteration"] = -1
     trainer = Trainer(config["TRAINER"])
     trainer.load_model()

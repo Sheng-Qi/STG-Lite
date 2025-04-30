@@ -16,7 +16,6 @@ from utils.general_utils import (
     inverse_sigmoid,
     get_expon_lr_func,
     build_rotation,
-    SH2RGB,
 )
 from utils.graphics_utils import BasicPointCloud
 from utils.optimizer_utils import (
@@ -25,7 +24,7 @@ from utils.optimizer_utils import (
     prune_param_group,
 )
 from utils.loss_utils import matrix_loss
-
+from utils.sh_utils import RGB2SH
 
 class BasicGaussianModelContext(BaseModel):
     device: str
@@ -147,11 +146,12 @@ class LearningRateParams(BaseModel):
     xyz_scales: float
     rotation: float
     opacity: float
-    features_dc: float
+    features: float
 
 
 class BasciGaussianModelParams(BaseModel):
     lambda_mask: float
+    sh_degree: int = Field(..., ge=0, le=3)
     color_transform: ColorTransformParams
     density_control: DensityControlParams
     reset_opacity: ResetOpacityParams
@@ -180,6 +180,9 @@ class BasicGaussianModel(AbstractModel):
         self._color_transformation_scheduler_args = None
         self._optimizer = None
 
+        # Other status
+        self._active_sh_degree = 0
+
         # Last rendering results
         self._rendered_image = None
         self._rendered_depth = None
@@ -201,6 +204,7 @@ class BasicGaussianModel(AbstractModel):
         self.__rotation: torch.Tensor = None
         self.__opacity: torch.Tensor = None
         self.__features_dc: torch.Tensor = None
+        self.__features_rest: torch.Tensor = None
 
     def __len__(self) -> int:
         return self.xyz.shape[0] if self.xyz is not None else 0
@@ -208,6 +212,10 @@ class BasicGaussianModel(AbstractModel):
     @property
     def device(self) -> torch.device:
         return self._device
+
+    @property
+    def sh_degree(self) -> int:
+        return self._basic_params.sh_degree
 
     @property
     def optimizer(self) -> torch.optim.Optimizer:
@@ -244,6 +252,14 @@ class BasicGaussianModel(AbstractModel):
     @property
     def features_dc(self) -> torch.Tensor:
         return self.__features_dc
+
+    @property
+    def features_rest(self) -> torch.Tensor:
+        return self.__features_rest
+
+    @property
+    def features(self) -> torch.Tensor:
+        return torch.cat((self.features_dc, self.features_rest), dim=1)
 
     def init(self, dataset: AbstractDataset):
         self._init_point_cloud_parameters(dataset)
@@ -300,7 +316,7 @@ class BasicGaussianModel(AbstractModel):
             scale_modifier=1.0,
             viewmatrix=camera.world_view_transform,
             projmatrix=camera.full_proj_transform,
-            sh_degree=0,
+            sh_degree=self._active_sh_degree,
             campos=camera.camera_center,
             prefiltered=False,
             antialiasing=False,
@@ -310,8 +326,8 @@ class BasicGaussianModel(AbstractModel):
         result = rasterizer(
             means3D=self.xyz,
             means2D=self._vspace_points,
-            shs=None,
-            colors_precomp=self.features_dc,
+            shs=self.features,
+            colors_precomp=None,
             opacities=self.opacity_activated,
             scales=self.xyz_scales_activated,
             rotations=self.rotation_activated,
@@ -361,20 +377,25 @@ class BasicGaussianModel(AbstractModel):
         """Optional method to be called at the end of each iteration."""
         return
 
+    def one_up_sh_degree(self):
+        if self._active_sh_degree < self._basic_params.sh_degree:
+            self._active_sh_degree += 1
+
     def _set_gaussian_attributes(self, param_dict: dict):
         assert all(
             key in param_dict
-            for key in ["xyz", "xyz_scales", "rotation", "opacity", "features_dc"]
+            for key in ["xyz", "xyz_scales", "rotation", "opacity", "features_dc", "features_rest"]
         ), "Missing required parameters in param_dict"
         assert all(
             param_dict["xyz"].shape[0] == param_dict[key].shape[0]
-            for key in ["xyz_scales", "rotation", "opacity", "features_dc"]
+            for key in ["xyz_scales", "rotation", "opacity", "features_dc", "features_rest"]
         ), "Parameter shapes do not match"
         self.__xyz = param_dict["xyz"]
         self.__xyz_scales = param_dict["xyz_scales"]
         self.__rotation = param_dict["rotation"]
         self.__opacity = param_dict["opacity"]
         self.__features_dc = param_dict["features_dc"]
+        self.__features_rest = param_dict["features_rest"]
 
     def _init_point_cloud_parameters(self, dataset: AbstractDataset):
         pcd_data = dataset.ply_data
@@ -408,24 +429,31 @@ class BasicGaussianModel(AbstractModel):
             )
         )
 
+        features = torch.zeros(
+            xyzs.shape[0], 3, (self._basic_params.sh_degree + 1) ** 2, device=self.device
+        )
+        features[:, :, 0] = RGB2SH(color)
+        features_dc = features[:, :, 0:1].transpose(1, 2)
+        features_rest = features[:, :, 1:].transpose(1, 2)
+
         self._set_gaussian_attributes(
             {
                 "xyz": nn.Parameter(xyzs.contiguous().requires_grad_(True)),
                 "xyz_scales": nn.Parameter(scales.requires_grad_(True)),
                 "rotation": nn.Parameter(rots.requires_grad_(True)),
                 "opacity": nn.Parameter(opactities.requires_grad_(True)),
-                "features_dc": nn.Parameter(color.contiguous().requires_grad_(True)),
+                "features_dc": nn.Parameter(features_dc.requires_grad_(True)),
+                "features_rest": nn.Parameter(features_rest.requires_grad_(True)),
             }
         )
 
         return prune_mask
 
-    def _fetch_point_cloud_parameters(self, ply_data: PlyData, is_sh: bool = True):
+    def _fetch_point_cloud_parameters(self, ply_data: PlyData):
         xyz_names = ["x", "y", "z"]
         xyz_scales_names = ["scale_" + str(i) for i in range(3)]
         rotation_names = ["rot_" + str(i) for i in range(4)]
         opacity_names = ["opacity"]
-        features_dc_names = ["f_dc_" + str(i) for i in range(3)]
 
         xyz = np.stack(
             [np.asarray(ply_data.elements[0][name]) for name in xyz_names], axis=1
@@ -440,11 +468,29 @@ class BasicGaussianModel(AbstractModel):
         opacity = np.stack(
             [np.asarray(ply_data.elements[0][name]) for name in opacity_names], axis=1
         )
-        features_dc = np.stack(
-            [np.asarray(ply_data.elements[0][name]) for name in features_dc_names],
-            axis=1,
+
+        features_dc = np.zeros((xyz.shape[0], 3, 1))
+        features_dc[:, 0, 0] = np.asarray(ply_data.elements[0]["f_dc_0"])
+        features_dc[:, 1, 0] = np.asarray(ply_data.elements[0]["f_dc_1"])
+        features_dc[:, 2, 0] = np.asarray(ply_data.elements[0]["f_dc_2"])
+        extra_f_names = [
+            p.name
+            for p in ply_data.elements[0].properties
+            if p.name.startswith("f_rest_")
+        ]
+        extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
+        if len(extra_f_names) != 3 * (self._basic_params.sh_degree + 1) ** 2 - 3:
+            raise ValueError(
+                f"Invalid number of extra features. Expected {3 * (self._basic_params.sh_degree + 1) ** 2 - 3}, got {len(extra_f_names)}"
+            )
+        features_rest = np.zeros((xyz.shape[0], len(extra_f_names)))
+        for i, name in enumerate(extra_f_names):
+            features_rest[:, i] = np.asarray(ply_data.elements[0][name])
+        features_rest = features_rest.reshape(
+            (features_rest.shape[0], 3, (self._basic_params.sh_degree + 1) ** 2 - 1)
         )
 
+        self._active_sh_degree = self._basic_params.sh_degree
         self._set_gaussian_attributes(
             {
                 "xyz": nn.Parameter(
@@ -469,24 +515,42 @@ class BasicGaussianModel(AbstractModel):
                 ),
                 "features_dc": nn.Parameter(
                     torch.tensor(
-                        SH2RGB(features_dc) if is_sh else features_dc,
+                        features_dc,
                         dtype=torch.float,
                         device=self.device,
-                    ).requires_grad_(True)
+                    )
+                    .transpose(1, 2)
+                    .contiguous()
+                    .requires_grad_(True)
+                ),
+                "features_rest": nn.Parameter(
+                    torch.tensor(
+                        features_rest,
+                        dtype=torch.float,
+                        device=self.device,
+                    )
+                    .transpose(1, 2)
+                    .contiguous()
+                    .requires_grad_(True)
                 ),
             }
         )
 
     def _save_point_cloud_parameters(self, pcd_path):
-        def RGB2SH(rgb):
-            C0 = 0.28209479177387814
-            return (rgb - 0.5) / C0
-
         os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
 
         xyz = self.xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
-        f_dc = self.features_dc.detach().cpu().numpy()
+        f_dc = (
+            self.features_dc.detach().transpose(1, 2).flatten(start_dim=1).cpu().numpy()
+        )
+        f_rest = (
+            self.features_rest.transpose(1, 2)
+            .flatten(start_dim=1)
+            .detach()
+            .cpu()
+            .numpy()
+        )
         opacity = self.opacity.detach().cpu().numpy()
         scale = self.xyz_scales.detach().cpu().numpy()
         rotation = self.rotation.detach().cpu().numpy()
@@ -495,6 +559,9 @@ class BasicGaussianModel(AbstractModel):
         list_of_attributes.extend(["x", "y", "z"])
         list_of_attributes.extend(["nx", "ny", "nz"])
         list_of_attributes.extend(["f_dc_" + str(i) for i in range(3)])
+        list_of_attributes.extend(
+            ["f_rest_" + str(i) for i in range(3 * (self._basic_params.sh_degree + 1) ** 2 - 3)]
+        )
         list_of_attributes.extend(["opacity"])
         list_of_attributes.extend(["scale_" + str(i) for i in range(3)])
         list_of_attributes.extend(["rot_" + str(i) for i in range(4)])
@@ -506,7 +573,8 @@ class BasicGaussianModel(AbstractModel):
             (
                 xyz,
                 normals,
-                RGB2SH(f_dc),
+                f_dc,
+                f_rest,
                 opacity,
                 scale,
                 rotation,
@@ -628,9 +696,14 @@ class BasicGaussianModel(AbstractModel):
             },
             {
                 "params": [self.__features_dc],
-                "lr": self._basic_params.learning_rate.features_dc,
+                "lr": self._basic_params.learning_rate.features,
                 "name": "features_dc",
             },
+            {
+                "params": [self.__features_rest],
+                "lr": self._basic_params.learning_rate.features / 20.0,
+                "name": "features_rest",
+            }
         ]
 
     def _initialize_learning_rate(self):
@@ -736,7 +809,8 @@ class BasicGaussianModel(AbstractModel):
             new_xyz_scales = self.xyz_scales[space_mask].repeat(split_num, 1)
             new_rotation = self.rotation[space_mask].repeat(split_num, 1)
             new_opacity = self.opacity[space_mask].repeat(split_num, 1)
-            new_features_dc = self.features_dc[space_mask].repeat(split_num, 1)
+            new_features_dc = self.features_dc[space_mask].repeat(split_num, 1, 1)
+            new_features_rest = self.features_rest[space_mask].repeat(split_num, 1, 1)
 
             stds = torch.exp(self.xyz_scales[space_split_mask]).repeat(split_num, 1)
             means = torch.zeros((stds.size(0), 3), device=self.device)
@@ -764,6 +838,7 @@ class BasicGaussianModel(AbstractModel):
                 "rotation": new_rotation,
                 "opacity": new_opacity,
                 "features_dc": new_features_dc,
+                "features_rest": new_features_rest,
             }
 
             optimizable_tensors = extend_param_group(self.optimizer, param_dict)
@@ -788,6 +863,7 @@ class BasicGaussianModel(AbstractModel):
                 "rotation": self.rotation,
                 "opacity": opacity,
                 "features_dc": self.features_dc,
+                "features_rest": self.features_rest,
             }
         )
 
@@ -821,6 +897,7 @@ class BasicGaussianModel(AbstractModel):
             "rotation",
             "opacity",
             "features_dc",
+            "features_rest",
         ]
         param_dict = {param: valid_point_mask for param in param_list}
 
