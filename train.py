@@ -157,10 +157,7 @@ class Trainer:
                 os.path.join(self._trainer_params.model_path, "cameras.json"), "w"
             ) as file:
                 json.dump(json_cams, file, indent=2)
-            with open(
-                os.path.join(self._trainer_params.model_path, "cfg_args"), "w"
-            ) as file:
-                file.write(f"Namespace(sh_degree={self.model.sh_degree})")
+            self._write_config_args()
             self._gaussians.init(self._dataset)
         else:
             active_iteration = (
@@ -368,6 +365,22 @@ class Trainer:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         torchvision.utils.save_image(render_pkgs["rendered_image"], save_path)
         return l1_value, psnr_value, dssim_value, ssim_value, lpips_alex_value, lpips_vgg_value
+
+    def _write_config_args(self):
+        wrapper_head = "Namespace("
+        has_frame_rate = hasattr(self._dataset, "frame_rate")
+        has_duration = hasattr(self._dataset, "duration")
+        parts = []
+        if has_duration:
+            parts.append(f"duration={self._dataset.duration}")
+        if has_frame_rate:
+            parts.append(f"fps={self._dataset.frame_rate}")
+        parts.append(f"sh_degree={self._gaussians.sh_degree}")
+        wrapper_body = ", ".join(parts)
+        wrapper_tail = ")"
+        cfg_path = os.path.join(self._trainer_params.model_path, "cfg_args")
+        with open(cfg_path, "w") as file:
+            file.write(wrapper_head + wrapper_body + wrapper_tail)
 
     def __compute_avgs(self, results_dict):
         return {
