@@ -597,10 +597,10 @@ class SpacetimeGaussianModel(BasicGaussianModel):
             new_t_offset = torch.abs(
                 torch.randn_like(new_t) * torch.exp(new_t_scale) / 2
             )
-            assert hasattr(dataset, "duration"), "Dataset must have duration"
+            assert hasattr(dataset, "frame_count"), "Dataset must have frame_count"
             aligned_t = (
-                torch.floor((new_t + new_t_offset) * dataset.duration)
-                / dataset.duration
+                torch.floor((new_t + new_t_offset) * dataset.frame_count)
+                / dataset.frame_count
             )
             new_t[time_split_mask_under_selection] = aligned_t[
                 time_split_mask_under_selection

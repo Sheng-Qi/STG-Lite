@@ -87,6 +87,6 @@ TRAINER:
     data_device: cpu
     int8_mode: true
     time_params:
-      frame_rate: 60
+      frame_rate: 59.94
       start_frame: 0
-      duration: 60
+      frame_count: 60

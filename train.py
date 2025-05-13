@@ -369,11 +369,10 @@ class Trainer:
     def _write_config_args(self):
         wrapper_head = "Namespace("
         has_frame_rate = hasattr(self._dataset, "frame_rate")
-        has_duration = hasattr(self._dataset, "duration")
+        has_frame_count = hasattr(self._dataset, "frame_count")
         parts = []
-        if has_duration:
-            parts.append(f"duration={self._dataset.duration}")
-        if has_frame_rate:
+        if has_frame_count and has_frame_rate:
+            parts.append(f"duration={self._dataset.frame_count / self._dataset.frame_rate}")
             parts.append(f"fps={self._dataset.frame_rate}")
         parts.append(f"sh_degree={self._gaussians.sh_degree}")
         wrapper_body = ", ".join(parts)

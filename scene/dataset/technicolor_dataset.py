@@ -15,7 +15,7 @@ from utils.ply_utils import storePly4D, fetchPly4D
 class TechinicolorDatasetParams(BaseModel):
     frame_rate: float = Field(..., gt=0)
     start_frame: int = Field(..., ge=0)
-    duration: int = Field(..., gt=0)
+    frame_count: int = Field(..., gt=0)
 
 
 class TechnicolorDataset(BasicColmapDataset):
@@ -37,15 +37,15 @@ class TechnicolorDataset(BasicColmapDataset):
         return self._time_params.start_frame
 
     @property
-    def duration(self) -> int:
-        return self._time_params.duration
+    def frame_count(self) -> int:
+        return self._time_params.frame_count
 
     def _load_ply(self):
         if self._ply_path is None:
             self._ply_path = os.path.join(
                 self._dataset_params.source_path,
                 "input_ply",
-                f"points3D_{self._time_params.start_frame}_{self._time_params.start_frame + self._time_params.duration}.ply",
+                f"points3D_{self._time_params.start_frame}_{self._time_params.start_frame + self._time_params.frame_count}.ply",
             )
             logging.info("PLY path not provided. Setting to " + self._ply_path)
             if not os.path.exists(self._ply_path):
@@ -66,7 +66,7 @@ class TechnicolorDataset(BasicColmapDataset):
         for time in tqdm(
             range(
                 self._time_params.start_frame,
-                self._time_params.start_frame + self._time_params.duration,
+                self._time_params.start_frame + self._time_params.frame_count,
             ),
             desc="Reading cameras progress",
         ):
@@ -139,7 +139,7 @@ class TechnicolorDataset(BasicColmapDataset):
                     scale=1.0,
                     timestamp=time,
                     timestamp_ratio=(time - self._time_params.start_frame)
-                    / self._time_params.duration,
+                    / self._time_params.frame_count,
                 )
                 cameras.append(
                     Camera(
@@ -164,7 +164,7 @@ class TechnicolorDataset(BasicColmapDataset):
 
         for time in range(
             self._time_params.start_frame,
-            self._time_params.start_frame + self._time_params.duration,
+            self._time_params.start_frame + self._time_params.frame_count,
         ):
             all_subfolders = os.listdir(self._dataset_params.source_path)
             subfolder_path = None
@@ -223,7 +223,7 @@ class TechnicolorDataset(BasicColmapDataset):
             totaltime.append(
                 np.ones((xyz.shape[0], 1))
                 * (time - self._time_params.start_frame)
-                / self._time_params.duration
+                / self._time_params.frame_count
             )
         xyz = np.concatenate(totalxyz, axis=0)
         rgb = np.concatenate(totalrgb, axis=0)

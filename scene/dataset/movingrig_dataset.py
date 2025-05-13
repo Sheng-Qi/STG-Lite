@@ -13,7 +13,7 @@ from utils.ply_utils import storePly4D, fetchPly4D
 
 class MovingRigDatasetParams(BaseModel):
     frame_rate: float = Field(..., gt=0)
-    duration: int = Field(..., gt=0)
+    frame_count: int = Field(..., gt=0)
 
 
 class MovingRigDataset(BasicColmapDataset):
@@ -31,8 +31,8 @@ class MovingRigDataset(BasicColmapDataset):
         return self._time_params.frame_rate
 
     @property
-    def duration(self) -> int:
-        return self._time_params.duration
+    def frame_count(self) -> int:
+        return self._time_params.frame_count
 
     def _load_ply(self):
         if self._ply_path is None:
@@ -111,7 +111,7 @@ class MovingRigDataset(BasicColmapDataset):
                 scale=1.0,
                 timestamp=self._parse_time(image_name),
                 timestamp_ratio=self._parse_time(image_name)
-                / self._time_params.duration,
+                / self._time_params.frame_count,
             )
             cameras.append(
                 Camera(
