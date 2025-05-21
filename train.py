@@ -20,6 +20,7 @@ from utils.renderer_utils import (
     RendererNames,
     is_forward_only,
     is_support_vspace,
+    render,
 )
 from utils.camera_utils import camera_to_JSON
 from utils.loss_utils import get_loss, ssim, l1_loss, psnr
@@ -88,6 +89,7 @@ class Trainer:
         self._dataset = parse_dataset(self._trainer_params.dataset_type)(
             self._trainer_params.dataset_params, self._dataset_context
         )
+        
         self._gaussians = self._GaussianModel(
             self._trainer_params.model_params, self._model_context
         )
@@ -176,6 +178,7 @@ class Trainer:
                 ),
                 self._dataset,
             )
+            self._gaussians.deallocate()
 
     def train_model(self):
         if self._trainer_params.parallel_load:
@@ -213,7 +216,8 @@ class Trainer:
                     iteration, selected_train_camera, self._dataset
                 )
             self._gaussians.optimizer.zero_grad(set_to_none=True)
-            render_pkgs = self._gaussians.render(
+            render_pkgs = render(
+                self._gaussians,
                 selected_train_camera,
                 self._GaussianRasterizationSettings,
                 self._GaussianRasterizer,
@@ -276,6 +280,7 @@ class Trainer:
                 if (iteration % 1000) == 0:
                     self._gaussians.one_up_sh_degree()
         self.__progress_bar.close()
+        print("Training finished!")
 
     def eval_model(self, eval_option: str):
         if len(self._gaussians) == 0:

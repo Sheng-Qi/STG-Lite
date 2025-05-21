@@ -1,4 +1,4 @@
-from typing import Type, NamedTuple, Self, List, Protocol
+from typing import Type, NamedTuple, Self, Protocol
 import math
 import numpy as np
 
@@ -13,38 +13,23 @@ class Interval(NamedTuple):
         steps = np.linspace(self.lower, self.upper, n)
         return [Interval(steps[i], steps[i+1]) for i in range(len(steps)-1)] 
 
-    def get_duration(self):
+    def get_duration(self) -> float:
+        """
+        Returns lower + upper
+        """
         return self.lower + self.upper
 
-    def is_within(self, time : float):
+    def is_within(self, time : float) -> bool:
+        """
+        Check if time is inside the interval
+        """
         return self.lower <= time < self.upper
 
-    def contains(self, other : Self):
-        """
-        Checks if this interval fully contains the other interval
-
-        e.g [0.0, 1.0] contains [0.3,0.7] -> yes
-        """
-        return self.lower  <= other.lower and self.upper > other.upper
-
-    def get_midpoint(self):
-        """
-        Get midpoint of the interval
-        """
-        return 0.5 * self.get_duration()
+    def __str__(self) -> str:
+        return f"[{self.lower:.3f}, {self.upper:.3f}]"
 
 class Segment(Protocol):
     interval : Interval
-
-    def push(self, item) -> None:
-        ...
-
-class Gaussian(Segment):
-    def __init__(self, interval : Interval):
-        self.interval = interval
-
-    def push(self, item) -> None:
-        ...
 
 class SegmentTree:
     def __init__(self, max_level : int, duration : float, segment_class : Type[Segment]):
@@ -52,7 +37,7 @@ class SegmentTree:
         self.duration = duration
         self.max_interval = Interval(0.0, self.duration)
 
-        self.segments : List[Segment] = []
+        self.segments : list[Segment] = []
         for i in range(max_level+1):
             num_segments = 2**i
             intervals = self.max_interval.divide(num_segments+1)
@@ -60,36 +45,10 @@ class SegmentTree:
                 self.segments.append(segment_class(interval))
         print(f"Created segment tree with max level {self.max_level} and {len(self.segments)} segments")
 
-    def push(self, item_interval : Interval, item, verbose=False):
-        def dfs(cur_segment_id : int, cur_interval : Interval):
-            if not cur_interval.contains(item_interval):
-                if cur_segment_id == 0:
-                    return 0
-                return -1
-            
-            if cur_segment_id >= len(self.segments):
-                return -1
-            
-            mid = cur_interval.get_midpoint()
-
-            left_segment_interval = Interval(cur_interval.lower, mid)
-            left_segment_id = dfs(1 + cur_segment_id * 2, left_segment_interval)
-            if left_segment_id != -1:
-                return left_segment_id
-
-            right_segment_interval = Interval(mid, cur_interval.upper)
-            right_segment_id = dfs(2 + cur_segment_id * 2, right_segment_interval)
-            if right_segment_id != -1:
-                return right_segment_id
-
-            return cur_segment_id
-
-        id = dfs(0, self.max_interval)
-        if verbose:
-            print(f"{item_interval} pushed to {id}->{self.segments[id].interval}")
-        self.segments[id].push(item)
-
-    def get_at_time(self, time : float) -> List[Segment]:
+    def get_all_segments_ref(self) -> list[Segment]:
+        return self.segments
+    
+    def get_at_time(self, time : float) -> list[Segment]:
         if not self.max_interval.is_within(time):
             print(f"Failed to query segments, {time} is not within the max interval {self.max_interval}")
             return []
@@ -106,6 +65,12 @@ class SegmentTree:
     
         
 if __name__ == "__main__":
+    class Gaussian(Segment):
+        def __init__(self, interval : Interval):
+            self.interval = interval
+
+        def push(self, item) -> None:
+            ...
     st = SegmentTree(3, 1.0, Gaussian)
     st.push(Interval(-0.3, 100.0), None, verbose=True)
     st.push(Interval(0.3, 0.7), None, verbose=True)
