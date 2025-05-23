@@ -3,7 +3,6 @@ from utils.st_utils import SegmentTree, Interval
 from typing import NamedTuple
 import torch
 
-# TODO: Instead of passing a gaussian model, pass just the attributes to segment_gaussian_to_st
 class GaussianAttrs(NamedTuple):
     xyz : torch.Tensor
     xyz_scales : torch.Tensor
@@ -86,7 +85,11 @@ class STGWithSTModel(SpacetimeGaussianModel):
 
         print("Deallocated")
 
-        segment_gaussians_to_st(self._st, self)
+        segment_gaussians_to_st(self._st, GaussianAttrs(
+            self.xyz, self.xyz_scales, self.rotation, self.opacity, 
+            self.features_dc, self.features_rest, self.t, 
+            self.t_scale, self.motion, self.omega
+        ))
 
     def update(self, time : float):
         """
@@ -110,13 +113,13 @@ def get_gaussian_interval(opacity_activated : torch.Tensor, tcenter : torch.Tens
     half = torch.where(opacity_activated > 0.005, tscale_activated * torch.sqrt(-2.0 * torch.log(0.005 / opacity_activated)), eps)
     return torch.cat((tcenter - half, tcenter + half), dim=-1)
 
-def segment_gaussians_to_st(segment_tree : SegmentTree, gaussian : STGWithSTModel) -> None:
+def segment_gaussians_to_st(segment_tree : SegmentTree, gaussian : GaussianAttrs) -> None:
     """
     Method returns None, fills in segment tree's segments
     """
 
-    gaussian_intervals = get_gaussian_interval(gaussian.opacity_activated, gaussian.t, gaussian.t_scale_active)
-    num_gaussians = gaussian.opacity_activated.shape[0]
+    num_gaussians = gaussian.xyz.shape[0]
+    gaussian_intervals = get_gaussian_interval(torch.sigmoid(gaussian.opacity), gaussian.t, torch.exp(gaussian.t_scale))
     gaussian_segment_ids = torch.zeros(num_gaussians)
     level_segment_start_id = 1
     for level in range(1, segment_tree.max_level+1):
@@ -135,5 +138,5 @@ def segment_gaussians_to_st(segment_tree : SegmentTree, gaussian : STGWithSTMode
     print("Total number of gaussians ", gaussian.xyz.shape[0])
     for i, segment in enumerate(segment_tree.get_all_segments_ref()):
         segment_ids = (gaussian_segment_ids == i).nonzero().squeeze(-1)
-        segment.fill(*(getattr(gaussian, attr)[segment_ids] for attr in gaussian.attr_list))
+        segment.fill(*(getattr(gaussian, attr)[segment_ids] for attr in gaussian._fields))
         print(f"Segment {i} size is {segment_ids.shape}")
