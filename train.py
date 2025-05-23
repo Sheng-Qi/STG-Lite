@@ -25,6 +25,7 @@ from utils.renderer_utils import (
 from utils.camera_utils import camera_to_JSON
 from utils.loss_utils import get_loss, ssim, l1_loss, psnr
 from lpips import LPIPS
+import time
 
 
 class TrainerParams(BaseModel):
@@ -178,7 +179,7 @@ class Trainer:
                 ),
                 self._dataset,
             )
-            self._gaussians.deallocate()
+            self._gaussians.divide_to_segments()
 
     def train_model(self):
         if self._trainer_params.parallel_load:
@@ -215,12 +216,21 @@ class Trainer:
                 self._gaussians.iteration_start(
                     iteration, selected_train_camera, self._dataset
                 )
+
+            import time
+            start = time.time()
+            timestamp_ratio = selected_train_camera.camera_info.timestamp_ratio 
+            active_gaussians_mask = self._gaussians.get_active_gaussians_mask_at_t(timestamp_ratio)
+            print(f"# active gaussians at time {timestamp_ratio} is {torch.sum(active_gaussians_mask)}")
+            print("lookup took ", time.time() - start)
+
             self._gaussians.optimizer.zero_grad(set_to_none=True)
             render_pkgs = render(
                 self._gaussians,
                 selected_train_camera,
                 self._GaussianRasterizationSettings,
                 self._GaussianRasterizer,
+                active_gaussians_mask
             )
             if self._trainer_params.method_mask_loss == "cover":
                 loss = get_loss(

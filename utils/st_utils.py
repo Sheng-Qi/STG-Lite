@@ -1,4 +1,4 @@
-from typing import Type, NamedTuple, Self, Protocol
+from typing import Type, NamedTuple, Protocol
 import math
 import numpy as np
 
@@ -31,6 +31,12 @@ class Interval(NamedTuple):
 class Segment(Protocol):
     interval : Interval
 
+    def size() -> int:
+        """
+        Returns the size of segment
+        """
+        ...
+
 class SegmentTree:
     def __init__(self, max_level : int, duration : float, segment_class : Type[Segment]):
         self.max_level = max_level
@@ -48,20 +54,22 @@ class SegmentTree:
     def get_all_segments_ref(self) -> list[Segment]:
         return self.segments
     
-    def get_at_time(self, time : float) -> list[Segment]:
+    def get_active_gaussians_id_at_time(self, time : float) -> list:
         if not self.max_interval.is_within(time):
             print(f"Failed to query segments, {time} is not within the max interval {self.max_interval}")
             return []
-        segments_out = [self.segments[0]]
+        
+        active_gaussian_ids = [self.segments[0].gaussian_ids]
 
         cur_level_duration = self.max_interval.get_duration()
         for level in range(1, self.max_level+1):
             cur_level_duration /= 2.0
             cur_level_segment_id = math.floor(time / cur_level_duration)
-            segment_linear_id = 2 ** level + cur_level_segment_id - 1
-            segments_out.append(self.segments[segment_linear_id])
-        return segments_out
-
+            segment_linear_id = int(2 ** level + cur_level_segment_id - 1)
+            segment_active_gaussian_ids = self.segments[segment_linear_id].gaussian_ids
+            active_gaussian_ids.append(segment_active_gaussian_ids)
+        return active_gaussian_ids
+    
     
         
 if __name__ == "__main__":

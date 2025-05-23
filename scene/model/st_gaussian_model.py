@@ -18,33 +18,13 @@ class GaussianAttrs(NamedTuple):
 class GaussianSegment:
     def __init__(self, interval : Interval):
         self.interval = interval
+        self.gaussian_ids : None | torch.Tensor = None
 
-        self.xyz : None | torch.Tensor = None
-        self.xyz_scales : None | torch.Tensor = None
-        self.rotation : None | torch.Tensor = None
-        self.opacity : None | torch.Tensor = None
-        self.features_dc : None | torch.Tensor = None
-        self.features_rest : None | torch.Tensor = None
-
-        self.t : None | torch.Tensor = None
-        self.t_scale : None | torch.Tensor = None
-        self.motion : None | torch.Tensor = None
-        self.omega : None | torch.Tensor = None
-
-    def fill(self, xyz, xyz_scales, rotation, opacity, features_dc, features_rest, t, t_scale, motion, omega):
-        self.xyz = xyz
-        self.xyz_scales = xyz_scales
-        self.rotation = rotation
-        self.opacity = opacity
-        self.features_dc = features_dc
-        self.features_rest = features_rest
-        self.t = t
-        self.t_scale = t_scale
-        self.motion = motion
-        self.omega = omega
+    def fill(self, gaussian_ids : torch.Tensor):
+        self.gaussian_ids = gaussian_ids
 
     def size(self):
-        return len(self.xyz)
+        return self.gaussian_ids.shape[0]
 
 class STGWithSTModel(SpacetimeGaussianModel):
     def __init__(self, params: dict, context: dict):
@@ -66,40 +46,18 @@ class STGWithSTModel(SpacetimeGaussianModel):
             "omega",
         ]
 
-    def deallocate(self):
+
+    def divide_to_segments(self):
+        segment_gaussians_to_st(self._st, self.opacity_activated, self.t, self.t_scale_active)
+
+    def get_active_gaussians_mask_at_t(self, t : float):
         """
-        Offload all Gaussian attributes from GPU        
-        and divide to segments
+        Returns a mask of active gaussians at time t
         """
-        self.xyz.detach().cpu()
-        self.xyz_scales.detach().cpu()
-        self.rotation.detach().cpu()
-        self.opacity.detach().cpu()
-        self.features_dc.detach().cpu()
-        self.features_rest.detach().cpu()
-
-        self.t.detach().cpu()
-        self.t_scale.detach().cpu()
-        self.motion.detach().cpu()
-        self.omega.detach().cpu()
-
-        print("Deallocated")
-
-        segment_gaussians_to_st(self._st, GaussianAttrs(
-            self.xyz, self.xyz_scales, self.rotation, self.opacity, 
-            self.features_dc, self.features_rest, self.t, 
-            self.t_scale, self.motion, self.omega
-        ))
-
-    def update(self, time : float):
-        """
-        Gather all relevant segments and combine
-        """
-        gaussian_segments : list[GaussianSegment] = self._st.get_at_time(time)
-        
-        gather_from_segments : torch.Tensor = lambda attr : torch.cat(tuple(getattr(seg, attr) for seg in gaussian_segments if seg.size() > 0)).to(self.device)        
-
-        self._set_gaussian_attributes_all({attr : gather_from_segments(attr).to(self.device) for attr in self.attr_list})
+        gaussian_mask = torch.zeros((self.xyz.shape[0], ), dtype=torch.int32)
+        active_gaussians_id = torch.cat(self._st.get_active_gaussians_id_at_time(t))
+        gaussian_mask[active_gaussians_id] = 1
+        return gaussian_mask
 
 def get_gaussian_interval(opacity_activated : torch.Tensor, tcenter : torch.Tensor, tscale_activated : torch.Tensor, eps = 1e-5) -> torch.Tensor:
     # Let the interval be [t_left, t_right].
@@ -113,13 +71,12 @@ def get_gaussian_interval(opacity_activated : torch.Tensor, tcenter : torch.Tens
     half = torch.where(opacity_activated > 0.005, tscale_activated * torch.sqrt(-2.0 * torch.log(0.005 / opacity_activated)), eps)
     return torch.cat((tcenter - half, tcenter + half), dim=-1)
 
-def segment_gaussians_to_st(segment_tree : SegmentTree, gaussian : GaussianAttrs) -> None:
+def segment_gaussians_to_st(segment_tree : SegmentTree, opacity_activated : torch.Tensor, t_center : torch.Tensor, t_scale_activated : torch.Tensor) -> None:
     """
-    Method returns None, fills in segment tree's segments
+    Method returns None, fills in segment tree's segments. Each segment contains a gaussian id 
     """
-
-    num_gaussians = gaussian.xyz.shape[0]
-    gaussian_intervals = get_gaussian_interval(torch.sigmoid(gaussian.opacity), gaussian.t, torch.exp(gaussian.t_scale))
+    num_gaussians = opacity_activated.shape[0]
+    gaussian_intervals = get_gaussian_interval(opacity_activated, t_center, t_scale_activated)
     gaussian_segment_ids = torch.zeros(num_gaussians)
     level_segment_start_id = 1
     for level in range(1, segment_tree.max_level+1):
@@ -134,9 +91,9 @@ def segment_gaussians_to_st(segment_tree : SegmentTree, gaussian : GaussianAttrs
             gaussian_segment_ids[nonzero_indices] = segment_linear_id
             
         level_segment_start_id += num_segment_bounds
-        
-    print("Total number of gaussians ", gaussian.xyz.shape[0])
+
+    print("Total number of gaussians ", num_gaussians)
     for i, segment in enumerate(segment_tree.get_all_segments_ref()):
         segment_ids = (gaussian_segment_ids == i).nonzero().squeeze(-1)
-        segment.fill(*(getattr(gaussian, attr)[segment_ids] for attr in gaussian._fields))
-        print(f"Segment {i} size is {segment_ids.shape}")
+        segment.fill(segment_ids)
+        print(f"Segment {i} size is {segment.size()}")
